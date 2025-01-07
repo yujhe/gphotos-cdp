@@ -228,7 +228,7 @@ func (s *Session) login(ctx context.Context) error {
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
-				if location == "https://photos.google.com/" {
+				if strings.HasPrefix(location, "https://photos.google.com") {
 					return nil
 				}
 				if *headlessFlag {
