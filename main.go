@@ -155,9 +155,14 @@ func NewSession() (*Session, error) {
 
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 	// Let's use as a base for allocator options (It implies Headless)
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+    opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.DisableGPU,
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(s.profileDir),
+		chromedp.Flag("enable-automation", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("allow-running-insecure-content", true),
 	)
 
 	if !*headlessFlag {
