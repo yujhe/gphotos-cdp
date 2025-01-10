@@ -265,6 +265,7 @@ func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
 	if err := os.WriteFile(filePath, buf, os.FileMode(0666)); err != nil {
 		log.Fatal(err)
 	}
+	return nil
 }
 
 // firstNav does either of:
