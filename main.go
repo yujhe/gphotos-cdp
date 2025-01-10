@@ -155,7 +155,7 @@ func NewSession() (*Session, error) {
 
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 	// Let's use as a base for allocator options (It implies Headless)
-    opts := append(chromedp.DefaultExecAllocatorOptions[:],
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.DisableGPU,
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
@@ -237,7 +237,8 @@ func (s *Session) login(ctx context.Context) error {
 					return nil
 				}
 				if *headlessFlag {
-					return errors.New("authentication not possible in -headless mode")
+					dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
+					return errors.New("authentication not possible in -headless mode, see error.png")
 				}
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
@@ -253,6 +254,17 @@ func (s *Session) login(ctx context.Context) error {
 			return nil
 		}),
 	)
+}
+
+func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
+	var buf []byte
+
+	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, buf, os.FileMode(0666)); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // firstNav does either of:
