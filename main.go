@@ -238,7 +238,7 @@ func (s *Session) login(ctx context.Context) error {
 				}
 				if *headlessFlag {
 					dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
-					return errors.New("authentication not possible in -headless mode, see error.png")
+					return errors.New("authentication not possible in -headless mode, see error.png (at " + location + ")")
 				}
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
