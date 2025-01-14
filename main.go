@@ -24,7 +24,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -110,7 +109,7 @@ type Session struct {
 // getLastDone returns the URL of the most recent item that was downloaded in
 // the previous run. If any, it should have been stored in dlDir/.lastdone
 func getLastDone(dlDir string) (string, error) {
-	data, err := ioutil.ReadFile(filepath.Join(dlDir, ".lastdone"))
+	data, err := os.ReadFile(filepath.Join(dlDir, ".lastdone"))
 	if os.IsNotExist(err) {
 		return "", nil
 	}
@@ -129,7 +128,7 @@ func NewSession() (*Session, error) {
 		}
 	} else {
 		var err error
-		dir, err = ioutil.TempDir("", "gphotos-cdp")
+		dir, err = os.MkdirTemp("", "gphotos-cdp")
 		if err != nil {
 			return nil, err
 		}
@@ -189,7 +188,7 @@ func (s *Session) cleanDlDir() error {
 	if s.dlDir == "" {
 		return nil
 	}
-	entries, err := ioutil.ReadDir(s.dlDir)
+	entries, err := os.ReadDir(s.dlDir)
 	if err != nil {
 		return err
 	}
@@ -245,7 +244,6 @@ func (s *Session) login(ctx context.Context) error {
 				}
 				time.Sleep(tick)
 			}
-			return nil
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
@@ -470,7 +468,7 @@ func markDone(dldir, location string) error {
 			return err
 		}
 	}
-	if err := ioutil.WriteFile(oldPath, []byte(location), 0600); err != nil {
+	if err := os.WriteFile(oldPath, []byte(location), 0600); err != nil {
 		// restore from backup
 		if err := os.Rename(newPath, oldPath); err != nil {
 			if !os.IsNotExist(err) {
@@ -537,7 +535,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDir)
 		}
 
-		entries, err := ioutil.ReadDir(s.dlDir)
+		entries, err := os.ReadDir(s.dlDir)
 		if err != nil {
 			return "", err
 		}
@@ -552,7 +550,11 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			if v.Name() == ".lastdone.bak" {
 				continue
 			}
-			fileEntries = append(fileEntries, v)
+			info, err := v.Info()
+			if err != nil {
+				return "", err
+			}
+			fileEntries = append(fileEntries, info)
 		}
 		if len(fileEntries) < 1 {
 			continue
@@ -589,7 +591,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 // moveDownload creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
+func (s *Session) moveDownload(_ context.Context, dlFile, location string) (string, error) {
 	parts := strings.Split(location, "/")
 	if len(parts) < 5 {
 		return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
