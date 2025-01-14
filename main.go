@@ -34,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/evilsocket/islazy/zip"
+
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
@@ -520,7 +522,7 @@ func startDownload(ctx context.Context) error {
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func getPhotoDate(ctx context.Context) (time.Time, error) {
+func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 	var dateStr string
 	var timeStr string
 	var tzStr string
@@ -661,32 +663,40 @@ func (s *Session) moveDownload(_ context.Context, dlFile, location string) (stri
 	return newFile, nil
 }
 
-// Sets creation and/or modified date of dlFile to date.
-func (s *Session) setFileDate(_ context.Context, dlFile string, date time.Time) error {
-	if err := os.Chtimes(filepath.Join(s.dlDir, dlFile), date, date); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Session) dlAndMove(ctx context.Context, location string) (string, error) {
+func (s *Session) dlAndMove(ctx context.Context, location string) ([]string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
-		return "", err
+		return []string{""}, err
 	}
 
-	if *fileDateFlag {
-		date, err := getPhotoDate(ctx)
-		if err != nil {
-			return "", err
-		}
-
-		if err := s.setFileDate(ctx, dlFile, date); err != nil {
-			return "", err
-		}
+	filepath, err := s.moveDownload(ctx, dlFile, location)
+	if err != nil {
+		return []string{""}, err
 	}
 
-	return s.moveDownload(ctx, dlFile, location)
+	if strings.HasSuffix(filepath, ".zip") {
+		return s.handleZip(ctx, filepath)
+	} else {
+		return []string{filepath}, nil
+	}
+}
+
+// handleZip handles the case where the currently item is a zip file. It extracts
+// each file in the zip file to the same folder, and then deletes the zip file.
+func (s *Session) handleZip(_ context.Context, zipfile string) ([]string, error) {
+	// unzip the file
+	zipdir := filepath.Dir(zipfile)
+	files, err := zip.Unzip(zipfile, zipdir)
+	if err != nil {
+		return []string{""}, err
+	}
+
+	// delete the zip file
+	if err := os.Remove(zipfile); err != nil {
+		return []string{""}, err
+	}
+
+	return files, nil
 }
 
 var (
@@ -745,12 +755,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 			prevLocation = location
-			filePath, err := s.dlAndMove(timeoutCtx, location)
+			filePaths, err := s.dlAndMove(timeoutCtx, location)
 			if err != nil {
 				return err
 			}
-			if err := doRun(filePath); err != nil {
+			if err := s.doFileDateUpdate(timeoutCtx, filePaths); err != nil {
 				return err
+			}
+			for _, f := range filePaths {
+				if err := doRun(f); err != nil {
+					return err
+				}
 			}
 			n++
 			if N > 0 && n >= N {
@@ -766,4 +781,32 @@ func (s *Session) navN(N int) func(context.Context) error {
 		}
 		return nil
 	}
+}
+
+// doFileDateUpdate updates the file date of the downloaded files to the photo date
+func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) error {
+	if !*fileDateFlag {
+		return nil
+	}
+
+	date, err := s.getPhotoDate(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range filePaths {
+		if err := s.setFileDate(ctx, f, date); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Sets modified date of dlFile to given date
+func (s *Session) setFileDate(_ context.Context, dlFile string, date time.Time) error {
+	if err := os.Chtimes(dlFile, date, date); err != nil {
+		return err
+	}
+	return nil
 }
