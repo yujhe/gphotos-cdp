@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -48,6 +49,7 @@ var (
 	startFlag    = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
 	runFlag      = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag  = flag.Bool("v", false, "be verbose")
+	fileDateFlag = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
 	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 )
 
@@ -367,6 +369,7 @@ func navToEnd(ctx context.Context) error {
 	for {
 		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
+		time.Sleep(tick * 5)
 		chromedp.CaptureScreenshot(&scr).Do(ctx)
 		if previousScr == nil {
 			previousScr = scr
@@ -376,7 +379,6 @@ func navToEnd(ctx context.Context) error {
 			break
 		}
 		previousScr = scr
-		time.Sleep(tick)
 	}
 
 	if *verboseFlag {
@@ -514,7 +516,58 @@ func startDownload(ctx context.Context) error {
 	return nil
 }
 
-// dowload starts the download of the currently viewed item, and on successful
+// getPhotoDate gets the date from the currently viewed item.
+// First we open the info panel by clicking on the "i" icon (aria-label="Open info")
+// if it is not already open. Then we read the date from the
+// aria-label="Date taken: ?????" field.
+func getPhotoDate(ctx context.Context) (time.Time, error) {
+	var dateStr string
+	var timeStr string
+	var tzStr string
+
+	// check if element [aria-label^="Date taken:"] is visible, if not click i button
+	for {
+		var dateNodes []*cdp.Node
+		var timeNodes []*cdp.Node
+		var tzNodes []*cdp.Node
+		time.Sleep(tick)
+		log.Printf("Extracting photo date text")
+		if err := chromedp.Run(ctx,
+			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="GMT"]`, &tzNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+		); err != nil {
+			return time.Time{}, err
+		}
+
+		if len(dateNodes) > 0 && len(timeNodes) > 0 && len(tzNodes) > 0 {
+			dateStr = strings.TrimPrefix(dateNodes[0].AttributeValue("aria-label"), "Date taken: ")
+			timeStr = strings.TrimPrefix(timeNodes[0].AttributeValue("aria-label"), "Time taken: ")
+			tzStr = tzNodes[0].AttributeValue("aria-label")
+			break
+		}
+
+		log.Printf("Date not visible, clicking on i button")
+		chromedp.Run(ctx,
+			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+		)
+	}
+
+	var datetimeStr = strings.Map(func(r rune) rune {
+		if r >= 32 && r <= 126 {
+			return r
+		}
+		return -1
+	}, dateStr+" "+timeStr+" "+tzStr)
+	date, err := time.Parse("Jan 2, 2006 Mon, 3:04PM MST:00", datetimeStr)
+	if err != nil {
+		return time.Time{}, err
+	}
+	log.Printf("Photo taken on: %v", date.Format(time.RFC3339))
+	return date, nil
+}
+
+// download starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
 func (s *Session) download(ctx context.Context, location string) (string, error) {
@@ -608,11 +661,31 @@ func (s *Session) moveDownload(_ context.Context, dlFile, location string) (stri
 	return newFile, nil
 }
 
+// Sets creation and/or modified date of dlFile to date.
+func (s *Session) setFileDate(_ context.Context, dlFile string, date time.Time) error {
+	if err := os.Chtimes(filepath.Join(s.dlDir, dlFile), date, date); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Session) dlAndMove(ctx context.Context, location string) (string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		return "", err
 	}
+
+	if *fileDateFlag {
+		date, err := getPhotoDate(ctx)
+		if err != nil {
+			return "", err
+		}
+
+		if err := s.setFileDate(ctx, dlFile, date); err != nil {
+			return "", err
+		}
+	}
+
 	return s.moveDownload(ctx, dlFile, location)
 }
 
@@ -662,14 +735,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 		var location, prevLocation string
 		for {
-			if err := chromedp.Location(&location).Do(ctx); err != nil {
+			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+
+			if err := chromedp.Location(&location).Do(timeoutCtx); err != nil {
 				return err
 			}
 			if location == prevLocation {
 				break
 			}
 			prevLocation = location
-			filePath, err := s.dlAndMove(ctx, location)
+			filePath, err := s.dlAndMove(timeoutCtx, location)
 			if err != nil {
 				return err
 			}
@@ -684,7 +760,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 
-			if err := navLeft(ctx); err != nil {
+			if err := navLeft(timeoutCtx); err != nil {
 				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
