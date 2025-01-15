@@ -337,7 +337,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	}
 
 	// timeout in case of infinite loop
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	if err := s.navToEnd(timeoutCtx); err != nil {
