@@ -329,6 +329,16 @@ func (s *Session) firstNav(ctx context.Context) error {
 		return err
 	}
 
+	select {
+	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			// timed out
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
+			return errors.New("timeout while finding end of page")
+		}
+	default:
+	}
+
 	return nil
 }
 
