@@ -95,6 +95,8 @@ func main() {
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
+	s.browserContext = ctx
+
 	if err := s.login(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -109,10 +111,11 @@ func main() {
 }
 
 type Session struct {
-	parentContext context.Context
-	parentCancel  context.CancelFunc
-	dlDir         string // dir where the photos get stored
-	profileDir    string // user data session dir. automatically created on chrome startup.
+	parentContext  context.Context
+	parentCancel   context.CancelFunc
+	browserContext context.Context
+	dlDir          string // dir where the photos get stored
+	profileDir     string // user data session dir. automatically created on chrome startup.
 	// lastDone is the most recent (wrt to Google Photos timeline) item (its URL
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
@@ -287,7 +290,7 @@ func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
 // 1) if a specific photo URL was specified with *startFlag, it navigates to it
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
-func (s *Session) firstNav(ctx context.Context) error {
+func (s *Session) firstNav(ctx context.Context) (err error) {
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
 	}
@@ -329,31 +332,23 @@ func (s *Session) firstNav(ctx context.Context) error {
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 	}
 
-	// timeout in case of infinite loop
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	if err := navToEnd(timeoutCtx); err != nil {
-		return s.checkTimeout(timeoutCtx, err, "while finding end of page (navToEnd)")
+	if *verboseFlag {
+		log.Printf("Finding end of page")
 	}
 
-	if err := navToLast(timeoutCtx); err != nil {
-		return s.checkTimeout(timeoutCtx, err, "while finding end of page (navToLast)")
+	// timeout in case of infinite loop
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := s.navToEnd(timeoutCtx); err != nil {
+		return err
+	}
+
+	if err := s.navToLast(timeoutCtx); err != nil {
+		return err
 	}
 
 	return nil
-}
-
-func (s *Session) checkTimeout(ctx context.Context, err error, while string) error {
-	select {
-	case <-ctx.Done():
-		if ctx.Err() == context.DeadlineExceeded {
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
-			return errors.New("timeout" + while)
-		}
-	default:
-	}
-	return err
 }
 
 // setFirstItem looks for the first item, and sets it as s.firstItem.
@@ -392,11 +387,17 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 }
 
 // navToEnd scrolls down to the end of the page, i.e. to the oldest items.
-func navToEnd(ctx context.Context) error {
+func (s *Session) navToEnd(ctx context.Context) error {
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
 	var previousScr, scr []byte
 	for {
+		// Check if context canceled
+		if ctx.Err() != nil {
+			dlScreenshot(s.browserContext, filepath.Join(s.dlDir, "error.png"))
+			return errors.New("timed out while finding end of page, see error.png")
+		}
+
 		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
 		time.Sleep(tick * 5)
@@ -421,10 +422,17 @@ func navToEnd(ctx context.Context) error {
 // navToLast sends the "\n" event until we detect that an item is loaded as a
 // new page. It then sends the right arrow key event until we've reached the very
 // last item.
-func navToLast(ctx context.Context) error {
+func (s *Session) navToLast(ctx context.Context) error {
 	var location, prevLocation string
 	ready := false
 	for {
+		// Check if context canceled
+		if ctx.Err() != nil {
+			dlScreenshot(s.browserContext, filepath.Join(s.dlDir, "error.png"))
+			return errors.New("timed out while finding last photo, see error.png")
+		}
+
+		log.Printf("a")
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
 		if !ready {
