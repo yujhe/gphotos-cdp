@@ -95,8 +95,6 @@ func main() {
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
-	s.browserContext = ctx
-
 	if err := s.login(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -111,11 +109,10 @@ func main() {
 }
 
 type Session struct {
-	parentContext  context.Context
-	parentCancel   context.CancelFunc
-	browserContext context.Context
-	dlDir          string // dir where the photos get stored
-	profileDir     string // user data session dir. automatically created on chrome startup.
+	parentContext context.Context
+	parentCancel  context.CancelFunc
+	dlDir         string // dir where the photos get stored
+	profileDir    string // user data session dir. automatically created on chrome startup.
 	// lastDone is the most recent (wrt to Google Photos timeline) item (its URL
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
@@ -336,15 +333,11 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		log.Printf("Finding end of page")
 	}
 
-	// timeout in case of infinite loop
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	if err := s.navToEnd(timeoutCtx); err != nil {
+	if err := s.navToEnd(ctx); err != nil {
 		return err
 	}
 
-	if err := s.navToLast(timeoutCtx); err != nil {
+	if err := s.navToLast(ctx); err != nil {
 		return err
 	}
 
@@ -392,15 +385,9 @@ func (s *Session) navToEnd(ctx context.Context) error {
 	// moving when two consecutive screenshots are identical.
 	var previousScr, scr []byte
 	for {
-		// Check if context canceled
-		if ctx.Err() != nil {
-			dlScreenshot(s.browserContext, filepath.Join(s.dlDir, "error.png"))
-			return errors.New("timed out while finding end of page, see error.png")
-		}
-
 		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
-		time.Sleep(tick * 5)
+		time.Sleep(tick * 10)
 		chromedp.CaptureScreenshot(&scr).Do(ctx)
 		if previousScr == nil {
 			previousScr = scr
@@ -423,16 +410,16 @@ func (s *Session) navToEnd(ctx context.Context) error {
 // new page. It then sends the right arrow key event until we've reached the very
 // last item.
 func (s *Session) navToLast(ctx context.Context) error {
+	deadline := time.Now().Add(4 * time.Minute)
 	var location, prevLocation string
 	ready := false
 	for {
 		// Check if context canceled
-		if ctx.Err() != nil {
-			dlScreenshot(s.browserContext, filepath.Join(s.dlDir, "error.png"))
+		if time.Now().After(deadline) {
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
 			return errors.New("timed out while finding last photo, see error.png")
 		}
 
-		log.Printf("a")
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
 		if !ready {
