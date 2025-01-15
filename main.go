@@ -317,11 +317,15 @@ func (s *Session) firstNav(ctx context.Context) error {
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 	}
 
-	if err := navToEnd(ctx); err != nil {
+	// timeout in case of infinite loop
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	if err := navToEnd(timeoutCtx); err != nil {
 		return err
 	}
 
-	if err := navToLast(ctx); err != nil {
+	if err := navToLast(timeoutCtx); err != nil {
 		return err
 	}
 
@@ -400,7 +404,8 @@ func navToLast(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
 		if !ready {
-			chromedp.KeyEvent("\n").Do(ctx)
+			// run js in chromedp to open last visible photo
+			chromedp.Evaluate(`[...document.querySelectorAll('[data-latest-bg]')].pop().click()`, nil).Do(ctx)
 			time.Sleep(tick)
 		}
 		if err := chromedp.Location(&location).Do(ctx); err != nil {
@@ -528,11 +533,13 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 	var tzStr string
 
 	// check if element [aria-label^="Date taken:"] is visible, if not click i button
+	var n = 0
 	for {
+		n++
 		var dateNodes []*cdp.Node
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
-		time.Sleep(tick)
+		time.Sleep(time.Duration(n) * tick)
 		log.Printf("Extracting photo date text")
 		if err := chromedp.Run(ctx,
 			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
