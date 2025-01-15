@@ -322,24 +322,26 @@ func (s *Session) firstNav(ctx context.Context) error {
 	defer cancel()
 
 	if err := navToEnd(timeoutCtx); err != nil {
-		return err
+		return s.checkTimeout(timeoutCtx, err, "while finding end of page (navToEnd)")
 	}
 
 	if err := navToLast(timeoutCtx); err != nil {
-		return err
-	}
-
-	select {
-	case <-ctx.Done():
-		if ctx.Err() == context.DeadlineExceeded {
-			// timed out
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
-			return errors.New("timeout while finding end of page")
-		}
-	default:
+		return s.checkTimeout(timeoutCtx, err, "while finding end of page (navToLast)")
 	}
 
 	return nil
+}
+
+func (s *Session) checkTimeout(ctx context.Context, err error, while string) error {
+	select {
+	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
+			return errors.New("timeout" + while)
+		}
+	default:
+	}
+	return err
 }
 
 // setFirstItem looks for the first item, and sets it as s.firstItem.
