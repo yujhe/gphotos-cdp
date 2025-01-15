@@ -576,7 +576,9 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 		}
 
 		log.Printf("Date not visible, clicking on i button")
-		chromedp.KeyEvent("i").Do(ctx)
+		chromedp.Run(ctx,
+			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+		)
 	}
 
 	var datetimeStr = strings.Map(func(r rune) rune {
