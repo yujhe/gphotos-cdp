@@ -58,6 +58,18 @@ var (
 var tick = 500 * time.Millisecond
 
 func main() {
+	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
+	if os.Getenv("XDG_CONFIG_HOME") == "" {
+		if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(os.TempDir(), ".chromium")); err != nil {
+			log.Fatalf("err %v", err)
+		}
+	}
+	if os.Getenv("XDG_CACHE_HOME") == "" {
+		if err := os.Setenv("XDG_CACHE_HOME", filepath.Join(os.TempDir(), ".chromium")); err != nil {
+			log.Fatalf("err %v", err)
+		}
+	}
+
 	flag.Parse()
 	if *nItemsFlag == 0 {
 		return
