@@ -404,15 +404,19 @@ func (s *Session) navToEnd(ctx context.Context) error {
 // new page. It then sends the right arrow key event until we've reached the very
 // last item.
 func (s *Session) navToLast(ctx context.Context) error {
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := time.Now().Add(20 * time.Second)
 	var location, prevLocation string
 	ready := false
+	n := 0
 	for {
 		// Check if context canceled
 		if time.Now().After(deadline) {
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
 			return errors.New("timed out while finding last photo, see error.png")
 		}
+
+		n++
+		dlScreenshot(ctx, filepath.Join(s.dlDir, fmt.Sprintf("%d.png", n)))
 
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
