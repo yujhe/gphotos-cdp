@@ -559,7 +559,9 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
 		time.Sleep(time.Duration(n) * tick)
-		log.Printf("Extracting photo date text")
+		if *verboseFlag {
+			log.Printf("Extracting photo date text")
+		}
 		if err := chromedp.Run(ctx,
 			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
@@ -591,7 +593,6 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	log.Printf("Photo taken on: %v", date.Format(time.RFC3339))
 	return date, nil
 }
 
@@ -828,6 +829,7 @@ func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) erro
 		if err := s.setFileDate(ctx, f, date); err != nil {
 			return err
 		}
+		log.Printf("downloaded %v with date %v", filepath.Base(f), date.Format(time.RFC3339))
 	}
 
 	return nil
