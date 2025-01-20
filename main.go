@@ -65,11 +65,21 @@ func main() {
 	zerolog.TimestampFieldName = "dt"
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	flag.Parse()
+	if *nItemsFlag == 0 {
+		return
+	}
 	if *verboseFlag {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 	if !*jsonLogFlag {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	}
+	if !*devFlag && *startFlag != "" {
+		log.Fatal().Msg("-start only allowed in dev mode")
+	}
+	if !*devFlag && *headlessFlag {
+		log.Fatal().Msg("-headless only allowed in dev mode")
 	}
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
@@ -84,16 +94,6 @@ func main() {
 		}
 	}
 
-	flag.Parse()
-	if *nItemsFlag == 0 {
-		return
-	}
-	if !*devFlag && *startFlag != "" {
-		log.Fatal().Msg("-start only allowed in dev mode")
-	}
-	if !*devFlag && *headlessFlag {
-		log.Fatal().Msg("-headless only allowed in dev mode")
-	}
 	s, err := NewSession()
 	if err != nil {
 		log.Fatal().Msg(err.Error())
