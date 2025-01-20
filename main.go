@@ -605,6 +605,7 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
 func (s *Session) download(ctx context.Context, location string) (string, error) {
+	st := time.Now()
 
 	if err := startDownload(ctx); err != nil {
 		return "", err
@@ -667,6 +668,8 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		}
 	}
 
+	log.Debug().Msgf("Download took %v", time.Since(st))
+
 	if err := markDone(s.dlDir, location); err != nil {
 		return "", err
 	}
@@ -722,6 +725,7 @@ func (s *Session) dlAndMove(ctx context.Context, location string) ([]string, err
 // handleZip handles the case where the currently item is a zip file. It extracts
 // each file in the zip file to the same folder, and then deletes the zip file.
 func (s *Session) handleZip(_ context.Context, zipfile string) ([]string, error) {
+	st := time.Now()
 	// unzip the file
 	zipdir := filepath.Dir(zipfile)
 	files, err := zip.Unzip(zipfile, zipdir)
@@ -734,6 +738,7 @@ func (s *Session) handleZip(_ context.Context, zipfile string) ([]string, error)
 		return []string{""}, err
 	}
 
+	log.Debug().Msgf("Unzipped %v in %v", zipfile, time.Since(st))
 	return files, nil
 }
 
@@ -800,6 +805,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if len(entries) == 0 {
+				// Local dir doesn't exist or is empty, continue downloading
 				filePaths, err := s.dlAndMove(ctx, location)
 				if err != nil {
 					return err
