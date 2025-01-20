@@ -24,7 +24,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,6 +41,9 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -58,15 +60,17 @@ var (
 var tick = 500 * time.Millisecond
 
 func main() {
+	zerolog.TimestampFieldName = "dt"
+
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
 		if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(os.TempDir(), ".chromium")); err != nil {
-			log.Fatalf("err %v", err)
+			log.Fatal().Msgf("err %v", err)
 		}
 	}
 	if os.Getenv("XDG_CACHE_HOME") == "" {
 		if err := os.Setenv("XDG_CACHE_HOME", filepath.Join(os.TempDir(), ".chromium")); err != nil {
-			log.Fatalf("err %v", err)
+			log.Fatal().Msgf("err %v", err)
 		}
 	}
 
@@ -75,35 +79,35 @@ func main() {
 		return
 	}
 	if !*devFlag && *startFlag != "" {
-		log.Fatal("-start only allowed in dev mode")
+		log.Fatal().Msg("-start only allowed in dev mode")
 	}
 	if !*devFlag && *headlessFlag {
-		log.Fatal("-headless only allowed in dev mode")
+		log.Fatal().Msg("-headless only allowed in dev mode")
 	}
 	s, err := NewSession()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 	defer s.Shutdown()
 
 	log.Printf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
 	if err := s.login(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 	fmt.Println("OK")
 }
@@ -270,10 +274,10 @@ func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
 	var buf []byte
 
 	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 	if err := os.WriteFile(filePath, buf, os.FileMode(0666)); err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 	return nil
 }
@@ -307,7 +311,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		s.lastDone = ""
 		if err := os.Remove(lastDoneFile); err != nil {
 			if os.IsNotExist(err) {
-				log.Fatal("Failed to remove .lastdone file because it was already gone.")
+				log.Fatal().Msg("Failed to remove .lastdone file because it was already gone.")
 			}
 			return err
 		}
