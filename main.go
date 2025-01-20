@@ -675,15 +675,23 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 	return filename, nil
 }
 
-// moveDownload creates a directory in s.dlDir named of the item ID found in
-// location. It then moves dlFile in that directory. It returns the new path
-// of the moved file.
-func (s *Session) moveDownload(_ context.Context, dlFile, location string) (string, error) {
+func imageIdFromUrl(location string) (string, error) {
 	parts := strings.Split(location, "/")
 	if len(parts) < 5 {
 		return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
 	}
-	newDir := filepath.Join(s.dlDir, parts[4])
+	return parts[4], nil
+}
+
+// moveDownload creates a directory in s.dlDir named of the item ID found in
+// location. It then moves dlFile in that directory. It returns the new path
+// of the moved file.
+func (s *Session) moveDownload(_ context.Context, dlFile, location string) (string, error) {
+	imageId, err := imageIdFromUrl(location)
+	if err != nil {
+		return "", err
+	}
+	newDir := filepath.Join(s.dlDir, imageId)
 	if err := os.MkdirAll(newDir, 0700); err != nil {
 		return "", err
 	}
@@ -786,16 +794,24 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 			prevLocation = location
-			filePaths, err := s.dlAndMove(timeoutCtx, location)
+
+			imageId, err := imageIdFromUrl(location)
 			if err != nil {
 				return err
 			}
-			if err := s.doFileDateUpdate(timeoutCtx, filePaths); err != nil {
-				return err
-			}
-			for _, f := range filePaths {
-				if err := doRun(f); err != nil {
+			_, err = os.ReadFile(filepath.Join(s.dlDir, imageId))
+			if errors.Is(err, os.ErrNotExist) {
+				filePaths, err := s.dlAndMove(timeoutCtx, location)
+				if err != nil {
 					return err
+				}
+				if err := s.doFileDateUpdate(timeoutCtx, filePaths); err != nil {
+					return err
+				}
+				for _, f := range filePaths {
+					if err := doRun(f); err != nil {
+						return err
+					}
 				}
 			}
 			n++
