@@ -126,6 +126,7 @@ type Session struct {
 	parentContext context.Context
 	parentCancel  context.CancelFunc
 	dlDir         string // dir where the photos get stored
+	dlDirTmp      string // dir where the photos get stored temporarily
 	profileDir    string // user data session dir. automatically created on chrome startup.
 	// lastDone is the most recent (wrt to Google Photos timeline) item (its URL
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
@@ -170,6 +171,10 @@ func NewSession() (*Session, error) {
 	if err := os.MkdirAll(dlDir, 0700); err != nil {
 		return nil, err
 	}
+	dlDirTmp := filepath.Join(dlDir, "tmp")
+	if err := os.MkdirAll(dlDirTmp, 0700); err != nil {
+		return nil, err
+	}
 	lastDone, err := getLastDone(dlDir)
 	if err != nil {
 		return nil, err
@@ -177,6 +182,7 @@ func NewSession() (*Session, error) {
 	s := &Session{
 		profileDir: dir,
 		dlDir:      dlDir,
+		dlDirTmp:   dlDirTmp,
 		lastDone:   lastDone,
 	}
 	return s, nil
@@ -214,7 +220,7 @@ func (s *Session) cleanDlDir() error {
 	if s.dlDir == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(s.dlDir)
+	entries, err := os.ReadDir(s.dlDirTmp)
 	if err != nil {
 		return err
 	}
@@ -236,7 +242,7 @@ func (s *Session) cleanDlDir() error {
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
-		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDirTmp),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Debug().Msg("pre-navigate")
 			return nil
@@ -604,25 +610,19 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 	for {
 		time.Sleep(tick)
 		if !started && time.Now().After(deadline) {
-			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDir)
+			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDirTmp)
 		}
 		if started && time.Now().After(deadline) {
-			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDir)
+			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDirTmp)
 		}
 
-		entries, err := os.ReadDir(s.dlDir)
+		entries, err := os.ReadDir(s.dlDirTmp)
 		if err != nil {
 			return "", err
 		}
 		var fileEntries []os.FileInfo
 		for _, v := range entries {
 			if v.IsDir() {
-				continue
-			}
-			if v.Name() == ".lastdone" {
-				continue
-			}
-			if v.Name() == ".lastdone.bak" {
 				continue
 			}
 			info, err := v.Info()
@@ -639,7 +639,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			continue
 		}
 		if len(fileEntries) > 1 {
-			return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDir)
+			return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDirTmp)
 		}
 		if !started {
 			if len(fileEntries) > 0 {
@@ -688,7 +688,7 @@ func (s *Session) moveDownload(_ context.Context, dlFile, location string) (stri
 		return "", err
 	}
 	newFile := filepath.Join(newDir, dlFile)
-	if err := os.Rename(filepath.Join(s.dlDir, dlFile), newFile); err != nil {
+	if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
 		return "", err
 	}
 	return newFile, nil
@@ -788,8 +788,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if err != nil {
 				return err
 			}
-			_, err = os.ReadFile(filepath.Join(s.dlDir, imageId))
-			if errors.Is(err, os.ErrNotExist) {
+			entries, err := os.ReadDir(filepath.Join(s.dlDir, imageId))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if len(entries) == 0 {
 				filePaths, err := s.dlAndMove(ctx, location)
 				if err != nil {
 					return err
