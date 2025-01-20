@@ -62,6 +62,7 @@ var tick = 500 * time.Millisecond
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
+	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
