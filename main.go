@@ -463,6 +463,7 @@ func doRun(filePath string) error {
 
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
+	st := time.Now()
 	muNavWaiting.Lock()
 	listenEvents = true
 	muNavWaiting.Unlock()
@@ -482,6 +483,7 @@ func navLeft(ctx context.Context) error {
 	muNavWaiting.Lock()
 	navWaiting = false
 	muNavWaiting.Unlock()
+	log.Debug().Msgf("navLeft took %v", time.Since(st))
 	return nil
 }
 
@@ -557,7 +559,6 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 		var dateNodes []*cdp.Node
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
-		time.Sleep(time.Duration(n) * tick)
 		log.Debug().Msg("Extracting photo date text")
 
 		if err := chromedp.Run(ctx,
@@ -579,6 +580,7 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 		chromedp.Run(ctx,
 			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
 		)
+		time.Sleep(time.Duration(n) * tick)
 	}
 
 	var datetimeStr = strings.Map(func(r rune) rune {
@@ -837,7 +839,7 @@ func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) erro
 		if err := s.setFileDate(ctx, f, date); err != nil {
 			return err
 		}
-		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.RFC3339))
+		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.DateOnly))
 	}
 
 	return nil
