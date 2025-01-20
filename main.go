@@ -236,7 +236,7 @@ func (s *Session) cleanDlDir() error {
 		if v.Name() == ".lastdone" {
 			continue
 		}
-		if err := os.Remove(filepath.Join(s.dlDir, v.Name())); err != nil {
+		if err := os.Remove(filepath.Join(s.dlDirTmp, v.Name())); err != nil {
 			return err
 		}
 	}
