@@ -57,6 +57,7 @@ var (
 	fileDateFlag = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
 	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 	jsonLogFlag  = flag.Bool("json", false, "output logs in JSON format")
+	logLevelFlag = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 )
 
 var tick = 500 * time.Millisecond
@@ -64,14 +65,18 @@ var tick = 500 * time.Millisecond
 func main() {
 	zerolog.TimestampFieldName = "dt"
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	flag.Parse()
 	if *nItemsFlag == 0 {
 		return
 	}
-	if *verboseFlag {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	if *verboseFlag && *logLevelFlag == "" {
+		*logLevelFlag = "debug"
 	}
+	level, err := zerolog.ParseLevel(*logLevelFlag)
+	if err != nil {
+		log.Fatal().Err(err).Msgf("-loglevel argument not valid")
+	}
+	zerolog.SetGlobalLevel(level)
 	if !*jsonLogFlag {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 	}
