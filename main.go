@@ -618,7 +618,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 
 		entries, err := os.ReadDir(s.dlDir)
 		if err != nil {
-			if strings.Contains(err.Error(), "no such file or directory") {
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			} else {
 				return "", err
