@@ -776,10 +776,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 		var location, prevLocation string
 		for {
-			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
-
-			if err := chromedp.Location(&location).Do(timeoutCtx); err != nil {
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
 			if location == prevLocation {
@@ -793,11 +790,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 			_, err = os.ReadFile(filepath.Join(s.dlDir, imageId))
 			if errors.Is(err, os.ErrNotExist) {
-				filePaths, err := s.dlAndMove(timeoutCtx, location)
+				filePaths, err := s.dlAndMove(ctx, location)
 				if err != nil {
 					return err
 				}
-				if err := s.doFileDateUpdate(timeoutCtx, filePaths); err != nil {
+				if err := s.doFileDateUpdate(ctx, filePaths); err != nil {
 					return err
 				}
 				for _, f := range filePaths {
@@ -814,7 +811,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 
-			if err := navLeft(timeoutCtx); err != nil {
+			if err := navLeft(ctx); err != nil {
 				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
