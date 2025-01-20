@@ -56,6 +56,7 @@ var (
 	verboseFlag  = flag.Bool("v", false, "be verbose")
 	fileDateFlag = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
 	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
+	jsonLogFlag  = flag.Bool("json", false, "output logs in JSON format")
 )
 
 var tick = 500 * time.Millisecond
@@ -63,6 +64,13 @@ var tick = 500 * time.Millisecond
 func main() {
 	zerolog.TimestampFieldName = "dt"
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *verboseFlag {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	if !*jsonLogFlag {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	}
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
@@ -92,7 +100,7 @@ func main() {
 	}
 	defer s.Shutdown()
 
-	log.Printf("Session Dir: %v", s.profileDir)
+	log.Info().Msgf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
 		log.Fatal().Msg(err.Error())
@@ -230,9 +238,7 @@ func (s *Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *verboseFlag {
-				log.Printf("pre-navigate")
-			}
+			log.Debug().Msg("pre-navigate")
 			return nil
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
@@ -257,16 +263,12 @@ func (s *Session) login(ctx context.Context) error {
 					dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
 					return errors.New("authentication not possible in -headless mode, see error.png (at " + location + ")")
 				}
-				if *verboseFlag {
-					log.Printf("Not yet authenticated, at: %v", location)
-				}
+				log.Debug().Msgf("Not yet authenticated, at: %v", location)
 				time.Sleep(tick)
 			}
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *verboseFlag {
-				log.Printf("post-navigate")
-			}
+			log.Debug().Msg("post-navigate")
 			return nil
 		}),
 	)
@@ -309,7 +311,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			return nil
 		}
 		lastDoneFile := filepath.Join(s.dlDir, ".lastdone")
-		log.Printf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
+		log.Info().Msgf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
 		s.lastDone = ""
 		if err := os.Remove(lastDoneFile); err != nil {
 			if os.IsNotExist(err) {
@@ -330,9 +332,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 	}
 
-	if *verboseFlag {
-		log.Printf("Finding end of page")
-	}
+	log.Debug().Msg("Finding end of page")
 
 	if err := s.navToEnd(ctx); err != nil {
 		return err
@@ -374,9 +374,7 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 		s.firstItem = strings.TrimPrefix(photoHref, "./photo/")
 		break
 	}
-	if *verboseFlag {
-		log.Printf("Page loaded, most recent item in the feed is: %s", s.firstItem)
-	}
+	log.Debug().Msgf("Page loaded, most recent item in the feed is: %s", s.firstItem)
 	return nil
 }
 
@@ -400,9 +398,7 @@ func (s *Session) navToEnd(ctx context.Context) error {
 		previousScr = scr
 	}
 
-	if *verboseFlag {
-		log.Printf("Successfully jumped to the end")
-	}
+	log.Debug().Msg("Successfully jumped to the end")
 
 	return nil
 }
@@ -434,7 +430,7 @@ func (s *Session) navToLast(ctx context.Context) error {
 		if !ready {
 			if location != "https://photos.google.com/" {
 				ready = true
-				log.Printf("Nav to the end sequence is started because location is %v", location)
+				log.Info().Msgf("Nav to the end sequence is started because location is %v", location)
 			}
 			continue
 		}
@@ -452,9 +448,7 @@ func doRun(filePath string) error {
 	if *runFlag == "" {
 		return nil
 	}
-	if *verboseFlag {
-		log.Printf("Running %v on %v", *runFlag, filePath)
-	}
+	log.Debug().Msgf("Running %v on %v", *runFlag, filePath)
 	cmd := exec.Command(*runFlag, filePath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -488,9 +482,8 @@ func navLeft(ctx context.Context) error {
 // markDone saves location in the dldir/.lastdone file, to indicate it is the
 // most recent item downloaded
 func markDone(dldir, location string) error {
-	if *verboseFlag {
-		log.Printf("Marking %v as done", location)
-	}
+	log.Debug().Msgf("Marking %v as done", location)
+
 	oldPath := filepath.Join(dldir, ".lastdone")
 	newPath := oldPath + ".bak"
 	if err := os.Rename(oldPath, newPath); err != nil {
@@ -533,9 +526,8 @@ func startDownload(ctx context.Context) error {
 	up.Type = input.KeyUp
 
 	for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-		if *verboseFlag {
-			log.Printf("Event: %+v", *ev)
-		}
+		log.Debug().Msgf("Event: %+v", *ev)
+
 		if err := ev.Do(ctx); err != nil {
 			return err
 		}
@@ -560,9 +552,8 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
 		time.Sleep(time.Duration(n) * tick)
-		if *verboseFlag {
-			log.Printf("Extracting photo date text")
-		}
+		log.Debug().Msg("Extracting photo date text")
+
 		if err := chromedp.Run(ctx,
 			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
@@ -578,7 +569,7 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 			break
 		}
 
-		log.Printf("Date not visible, clicking on i button")
+		log.Info().Msg("Date not visible, clicking on i button")
 		chromedp.Run(ctx,
 			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
 		)
@@ -847,7 +838,7 @@ func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) erro
 		if err := s.setFileDate(ctx, f, date); err != nil {
 			return err
 		}
-		log.Printf("downloaded %v with date %v", filepath.Base(f), date.Format(time.RFC3339))
+		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.RFC3339))
 	}
 
 	return nil
