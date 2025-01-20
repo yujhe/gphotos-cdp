@@ -620,6 +620,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 
 		entries, err := os.ReadDir(s.dlDir)
 		if err != nil {
+			log.Err(err).Msg("error reading download dir")
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			} else {
@@ -639,7 +640,12 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			}
 			info, err := v.Info()
 			if err != nil {
-				return "", err
+				log.Err(err).Msg("error getting info of file")
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				} else {
+					return "", err
+				}
 			}
 			fileEntries = append(fileEntries, info)
 		}
