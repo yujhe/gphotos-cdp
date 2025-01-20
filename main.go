@@ -627,7 +627,6 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			}
 			info, err := v.Info()
 			if err != nil {
-				log.Err(err).Msg("error getting info of file")
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				} else {
