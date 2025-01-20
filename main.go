@@ -24,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -618,7 +619,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 
 		entries, err := os.ReadDir(s.dlDir)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			} else {
 				return "", err
