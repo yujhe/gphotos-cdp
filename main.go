@@ -61,6 +61,7 @@ var (
 )
 
 var tick = 500 * time.Millisecond
+var stillProcessingError = errors.New("video is still processing & can be downloaded later")
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
@@ -687,6 +688,15 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 	var fileSize int64
 	deadline := time.Now().Add(time.Minute)
 	for {
+		// Checking for gphotos warning that this video can't be downloaded (no known solution)
+		// This check only works for requestDownload2 method (not requestDownload1)
+		var nodes []*cdp.Node
+		chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"]`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx)
+		if len(nodes) > 0 {
+			log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
+			return "", stillProcessingError
+		}
+
 		time.Sleep(tick)
 		if !started && time.Now().After(deadline) {
 			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDirTmp)
@@ -898,19 +908,35 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				// Local dir doesn't exist or is empty, continue downloading
 				filePaths, err := s.dlAndMove(ctx, location, originalFilename)
-				if err != nil {
-					return err
-				}
-				if err := s.doFileDateUpdate(ctx, date, filePaths); err != nil {
-					return err
-				}
-				for _, f := range filePaths {
-					if err := doRun(f); err != nil {
+				if err == stillProcessingError {
+					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
+					// write location to file to be downloaded later (append to .skipped)
+					f, err := os.OpenFile(filepath.Join(s.dlDir, ".skipped"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+					if err != nil {
 						return err
+					}
+					if _, err := f.WriteString(location + "\n"); err != nil {
+						return err
+					}
+				} else {
+					if err != nil {
+						return err
+					}
+					if err := s.doFileDateUpdate(ctx, date, filePaths); err != nil {
+						return err
+					}
+					for _, f := range filePaths {
+						if err := doRun(f); err != nil {
+							return err
+						}
 					}
 				}
 			} else {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
+			}
+
+			if err := markDone(s.dlDir, location); err != nil {
+				return err
 			}
 			n++
 			if N > 0 && n >= N {
