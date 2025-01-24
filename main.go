@@ -683,10 +683,13 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		return "", err
 	}
 
+	timeout1 := time.NewTimer(30 * time.Second)
+	timeout2 := time.NewTimer(60 * time.Second)
+	deadline := time.Now().Add(time.Minute)
+
 	var filename string
 	started := false
 	var fileSize int64
-	deadline := time.Now().Add(time.Minute)
 	for {
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
@@ -698,9 +701,18 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		}
 
 		time.Sleep(tick)
-		if !started && time.Now().After(deadline) {
-			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDirTmp)
+		if !started {
+			select {
+			case <-timeout1.C:
+				if err := requestDownload1(ctx); err != nil {
+					return "", err
+				}
+			case <-timeout2.C:
+				return "", fmt.Errorf("timeout waiting for download to start for %v", location)
+			default:
+			}
 		}
+
 		if started && time.Now().After(deadline) {
 			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDirTmp)
 		}
@@ -787,6 +799,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 func (s *Session) dlAndMove(ctx context.Context, location, originalFilename string) ([]string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
+		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 		return []string{""}, err
 	}
 
@@ -955,7 +968,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 }
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
-func (s *Session) doFileDateUpdate(ctx context.Context, date time.Time, filePaths []string) error {
+func (s *Session) doFileDateUpdate(_ context.Context, date time.Time, filePaths []string) error {
 	if !*fileDateFlag {
 		return nil
 	}
