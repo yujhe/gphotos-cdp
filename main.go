@@ -576,18 +576,18 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
-// func requestDownload2(ctx context.Context) error {
-// 	log.Trace().Msg("Requesting download (alternative method)")
-// 	if err := chromedp.Run(ctx,
-// 		chromedp.Evaluate(`document.querySelectorAll('[aria-label="More options"]')[1].click()`, nil),
-// 		chromedp.Sleep(tick),
-// 		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-// 		chromedp.Sleep(tick),
-// 	); err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+func requestDownload2(ctx context.Context) error {
+	log.Trace().Msg("Requesting download (alternative method)")
+	if err := chromedp.Run(ctx,
+		chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
+		chromedp.Sleep(tick),
+		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+		chromedp.Sleep(tick),
+	); err != nil {
+		return err
+	}
+	return nil
+}
 
 // getPhotoData gets the date from the currently viewed item.
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
@@ -678,7 +678,7 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string) (time.Time, 
 func (s *Session) download(ctx context.Context, location string) (string, error) {
 	st := time.Now()
 
-	if err := requestDownload1(ctx); err != nil {
+	if err := requestDownload2(ctx); err != nil {
 		return "", err
 	}
 
