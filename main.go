@@ -101,21 +101,24 @@ func main() {
 
 	s, err := NewSession()
 	if err != nil {
-		log.Fatal().Msg(err.Error())
+		log.Err(err).Msgf("Failed to create session")
+		return
 	}
 	defer s.Shutdown()
 
 	log.Info().Msgf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
-		log.Fatal().Msg(err.Error())
+		log.Err(err).Msgf("Failed to clean download directory %v", s.dlDir)
+		return
 	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
 	if err := s.login(ctx); err != nil {
-		log.Fatal().Msg(err.Error())
+		log.Err(err).Msg("login failed")
+		return
 	}
 
 	if err := chromedp.Run(ctx,
@@ -285,16 +288,23 @@ func (s *Session) login(ctx context.Context) error {
 	)
 }
 
-func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
+func dlScreenshot(ctx context.Context, filePath string) {
 	var buf []byte
 
+	log.Trace().Msgf("Saving screenshot to %v", filePath+".png")
 	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
-		log.Fatal().Msg(err.Error())
+		log.Err(err).Msg(err.Error())
+	} else if err := os.WriteFile(filePath+".png", buf, os.FileMode(0666)); err != nil {
+		log.Err(err).Msg(err.Error())
 	}
-	if err := os.WriteFile(filePath, buf, os.FileMode(0666)); err != nil {
-		log.Fatal().Msg(err.Error())
+
+	// Dump the HTML to a file
+	var html string
+	if err := chromedp.Run(ctx, chromedp.OuterHTML("html", &html, chromedp.ByQuery)); err != nil {
+		log.Err(err).Msg(err.Error())
+	} else if err := os.WriteFile(filePath+".html", []byte(html), 0640); err != nil {
+		log.Err(err).Msg(err.Error())
 	}
-	return nil
 }
 
 // firstNav does either of:
@@ -302,6 +312,9 @@ func dlScreenshot(ctx context.Context, filePath string) chromedp.Tasks {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
 	}
@@ -326,7 +339,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		s.lastDone = ""
 		if err := os.Remove(lastDoneFile); err != nil {
 			if os.IsNotExist(err) {
-				log.Fatal().Msg("Failed to remove .lastdone file because it was already gone.")
+				log.Err(err).Msg("Failed to remove .lastdone file because it was already gone.")
 			}
 			return err
 		}
@@ -364,10 +377,11 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 	// wait for page to be loaded, i.e. that we can make an element active by using
 	// the right arrow key.
 	for {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		time.Sleep(tick)
+		log.Trace().Msg("Attempting to find first item")
 		attributes := make(map[string]string)
 		if err := chromedp.Run(ctx,
+			chromedp.KeyEvent(kb.ArrowRight),
+			chromedp.Sleep(tick),
 			chromedp.Attributes(`document.activeElement`, &attributes, chromedp.ByJSPath)); err != nil {
 			return err
 		}
@@ -393,12 +407,19 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 func (s *Session) navToEnd(ctx context.Context) error {
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
 	var previousScr, scr []byte
 	for {
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		chromedp.KeyEvent(kb.End).Do(ctx)
-		time.Sleep(tick * 10)
-		chromedp.CaptureScreenshot(&scr).Do(ctx)
+		if err := chromedp.Run(ctx,
+			chromedp.KeyEvent(kb.PageDown),
+			chromedp.KeyEvent(kb.End),
+			chromedp.Sleep(tick*time.Duration(5)),
+			chromedp.CaptureScreenshot(&scr),
+		); err != nil {
+			return err
+		}
 		if previousScr == nil {
 			previousScr = scr
 			continue
@@ -424,7 +445,7 @@ func (s *Session) navToLast(ctx context.Context) error {
 	for {
 		// Check if context canceled
 		if time.Now().After(deadline) {
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error.png"))
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 			return errors.New("timed out while finding last photo, see error.png")
 		}
 
@@ -488,7 +509,7 @@ func navLeft(ctx context.Context) error {
 	muNavWaiting.Lock()
 	navWaiting = false
 	muNavWaiting.Unlock()
-	log.Debug().Msgf("navLeft took %v", time.Since(st))
+	log.Debug().Msgf("navLeft took %dms", time.Since(st).Milliseconds())
 	return nil
 }
 
@@ -516,12 +537,17 @@ func markDone(dldir, location string) error {
 	return nil
 }
 
-// startDownload sends the Shift+D event, to start the download of the currently
+// requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
-func startDownload(ctx context.Context) error {
-	keyD, ok := kb.Keys['D']
+func requestDownload1(ctx context.Context) error {
+	log.Trace().Msg("Requesting download")
+	return pressButton(ctx, "D", input.ModifierShift)
+}
+
+func pressButton(ctx context.Context, key string, modifier input.Modifier) error {
+	keyD, ok := kb.Keys[rune(key[0])]
 	if !ok {
-		return errors.New("no D key")
+		return fmt.Errorf("no %s key", key)
 	}
 
 	down := input.DispatchKeyEventParams{
@@ -530,7 +556,7 @@ func startDownload(ctx context.Context) error {
 		NativeVirtualKeyCode:  keyD.Native,
 		WindowsVirtualKeyCode: keyD.Windows,
 		Type:                  input.KeyDown,
-		Modifiers:             input.ModifierShift,
+		Modifiers:             modifier,
 	}
 	if runtime.GOOS == "darwin" {
 		down.NativeVirtualKeyCode = 0
@@ -539,53 +565,92 @@ func startDownload(ctx context.Context) error {
 	up.Type = input.KeyUp
 
 	for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-		log.Debug().Msgf("Event: %+v", *ev)
+		log.Trace().Msgf("Triggering button press event: %v, %v, %v", ev.Key, ev.Type, ev.Modifiers)
 
-		if err := ev.Do(ctx); err != nil {
+		if err := chromedp.Run(ctx, ev); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// getPhotoDate gets the date from the currently viewed item.
+// requestDownload2 clicks the icons to start the download of the currently
+// viewed item.
+// func requestDownload2(ctx context.Context) error {
+// 	log.Trace().Msg("Requesting download (alternative method)")
+// 	if err := chromedp.Run(ctx,
+// 		chromedp.Evaluate(`document.querySelectorAll('[aria-label="More options"]')[1].click()`, nil),
+// 		chromedp.Sleep(tick),
+// 		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+// 		chromedp.Sleep(tick),
+// 	); err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// getPhotoData gets the date from the currently viewed item.
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
+func (s *Session) getPhotoData(ctx context.Context, imageId string) (time.Time, string, error) {
+	var filename string
 	var dateStr string
 	var timeStr string
 	var tzStr string
+	timeout := time.NewTimer(40 * time.Second)
+	log.Debug().Str("imageId", imageId).Msg("Extracting photo date text and original file name")
 
 	// check if element [aria-label^="Date taken:"] is visible, if not click i button
 	var n = 0
 	for {
 		n++
+		var filenameNodes []*cdp.Node
 		var dateNodes []*cdp.Node
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
-		log.Debug().Msg("Extracting photo date text")
 
 		if err := chromedp.Run(ctx,
+			chromedp.Nodes(`[aria-label^="Filename:"]`, &filenameNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="GMT"]`, &tzNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 		); err != nil {
-			return time.Time{}, err
+			return time.Time{}, "", err
 		}
 
-		if len(dateNodes) > 0 && len(timeNodes) > 0 && len(tzNodes) > 0 {
+		if len(dateNodes) > 0 && len(timeNodes) > 0 && len(filenameNodes) > 0 {
+			filename = strings.TrimPrefix(filenameNodes[0].AttributeValue("aria-label"), "Filename: ")
 			dateStr = strings.TrimPrefix(dateNodes[0].AttributeValue("aria-label"), "Date taken: ")
 			timeStr = strings.TrimPrefix(timeNodes[0].AttributeValue("aria-label"), "Time taken: ")
-			tzStr = tzNodes[0].AttributeValue("aria-label")
+			if len(tzNodes) > 0 {
+				tzStr = tzNodes[0].AttributeValue("aria-label")
+			} else {
+				// If timezone is not visible, use current timezone (parse date to account for DST)
+				t, err := time.Parse("Jan 2, 2006", dateStr)
+				if err != nil {
+					t = time.Now()
+				}
+				_, offset := t.Zone()
+				tzStr = fmt.Sprintf("%+03d%02d", offset/3600, (offset%3600)/60)
+			}
 			break
 		}
 
 		log.Info().Msg("Date not visible, clicking on i button")
-		chromedp.Run(ctx,
+		//	if err := pressButton(ctx, "I", input.ModifierNone); err != nil {
+		//		return time.Time{}, "", err
+		//	}
+		if err := chromedp.Run(ctx,
 			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-		)
-		time.Sleep(time.Duration(n) * tick)
+		); err != nil {
+			return time.Time{}, "", err
+		}
+		select {
+		case <-timeout.C:
+			return time.Time{}, "", fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
+		case <-time.After(time.Duration(n) * tick):
+		}
 	}
 
 	var datetimeStr = strings.Map(func(r rune) rune {
@@ -593,12 +658,18 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 			return r
 		}
 		return -1
-	}, dateStr+" "+timeStr+" "+tzStr)
-	date, err := time.Parse("Jan 2, 2006 Mon, 3:04PM MST:00", datetimeStr)
+	}, dateStr+" "+timeStr) + " " + strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || r == '+' || r == '-' {
+			return r
+		}
+		return -1
+	}, tzStr)
+	date, err := time.Parse("Jan 2, 2006 Mon, 3:04PM Z0700", datetimeStr)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, "", err
 	}
-	return date, nil
+	log.Debug().Str("imageId", imageId).Msgf("Found date: %v and original filename: %v ", date, filename)
+	return date, filename, nil
 }
 
 // download starts the download of the currently viewed item, and on successful
@@ -607,7 +678,7 @@ func (s *Session) getPhotoDate(ctx context.Context) (time.Time, error) {
 func (s *Session) download(ctx context.Context, location string) (string, error) {
 	st := time.Now()
 
-	if err := startDownload(ctx); err != nil {
+	if err := requestDownload1(ctx); err != nil {
 		return "", err
 	}
 
@@ -685,50 +756,65 @@ func imageIdFromUrl(location string) (string, error) {
 	return parts[4], nil
 }
 
-// moveDownload creates a directory in s.dlDir named of the item ID found in
-// location. It then moves dlFile in that directory. It returns the new path
-// of the moved file.
-func (s *Session) moveDownload(_ context.Context, dlFile, location string) (string, error) {
+// makeOutDir creates a directory in s.dlDir named of the item ID found in
+// location
+func (s *Session) makeOutDir(location string) (string, error) {
 	imageId, err := imageIdFromUrl(location)
 	if err != nil {
 		return "", err
 	}
+
 	newDir := filepath.Join(s.dlDir, imageId)
 	if err := os.MkdirAll(newDir, 0700); err != nil {
 		return "", err
 	}
-	newFile := filepath.Join(newDir, dlFile)
-	if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
-		return "", err
-	}
-	return newFile, nil
+	return newDir, nil
 }
 
-func (s *Session) dlAndMove(ctx context.Context, location string) ([]string, error) {
+// dlAndMove creates a directory in s.dlDir named of the item ID found in
+// location. It then moves dlFile in that directory. It returns the new path
+// of the moved file.
+func (s *Session) dlAndMove(ctx context.Context, location, originalFilename string) ([]string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		return []string{""}, err
 	}
 
-	filepath, err := s.moveDownload(ctx, dlFile, location)
+	outDir, err := s.makeOutDir(location)
 	if err != nil {
 		return []string{""}, err
 	}
 
-	if strings.HasSuffix(filepath, ".zip") {
-		return s.handleZip(ctx, filepath)
+	var filename string
+	if dlFile != "download" && dlFile != "" {
+		filename = dlFile
 	} else {
-		return []string{filepath}, nil
+		filename = originalFilename
+	}
+
+	if strings.HasSuffix(filename, ".zip") {
+		filepaths, err := s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
+		if err != nil {
+			return []string{""}, err
+		}
+		return filepaths, nil
+	} else {
+		newFile := filepath.Join(outDir, filename)
+		log.Debug().Msgf("Moving %v to %v", dlFile, newFile)
+		if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
+			return []string{""}, err
+		}
+		return []string{newFile}, nil
 	}
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
 // each file in the zip file to the same folder, and then deletes the zip file.
-func (s *Session) handleZip(_ context.Context, zipfile string) ([]string, error) {
+func (s *Session) handleZip(zipfile, outFolder string) ([]string, error) {
 	st := time.Now()
+	log.Debug().Msgf("Unzipping %v in %v", zipfile, outFolder)
 	// unzip the file
-	zipdir := filepath.Dir(zipfile)
-	files, err := zip.Unzip(zipfile, zipdir)
+	files, err := zip.Unzip(zipfile, outFolder)
 	if err != nil {
 		return []string{""}, err
 	}
@@ -805,12 +891,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if len(entries) == 0 {
-				// Local dir doesn't exist or is empty, continue downloading
-				filePaths, err := s.dlAndMove(ctx, location)
+				date, originalFilename, err := s.getPhotoData(ctx, imageId)
 				if err != nil {
 					return err
 				}
-				if err := s.doFileDateUpdate(ctx, filePaths); err != nil {
+
+				// Local dir doesn't exist or is empty, continue downloading
+				filePaths, err := s.dlAndMove(ctx, location, originalFilename)
+				if err != nil {
+					return err
+				}
+				if err := s.doFileDateUpdate(ctx, date, filePaths); err != nil {
 					return err
 				}
 				for _, f := range filePaths {
@@ -818,6 +909,8 @@ func (s *Session) navN(N int) func(context.Context) error {
 						return err
 					}
 				}
+			} else {
+				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
 			n++
 			if N > 0 && n >= N {
@@ -836,18 +929,15 @@ func (s *Session) navN(N int) func(context.Context) error {
 }
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
-func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) error {
+func (s *Session) doFileDateUpdate(ctx context.Context, date time.Time, filePaths []string) error {
 	if !*fileDateFlag {
 		return nil
 	}
 
-	date, err := s.getPhotoDate(ctx)
-	if err != nil {
-		return err
-	}
+	log.Debug().Msgf("Setting file date for %v", filePaths)
 
 	for _, f := range filePaths {
-		if err := s.setFileDate(ctx, f, date); err != nil {
+		if err := s.setFileDate(f, date); err != nil {
 			return err
 		}
 		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.DateOnly))
@@ -857,7 +947,7 @@ func (s *Session) doFileDateUpdate(ctx context.Context, filePaths []string) erro
 }
 
 // Sets modified date of dlFile to given date
-func (s *Session) setFileDate(_ context.Context, dlFile string, date time.Time) error {
+func (s *Session) setFileDate(dlFile string, date time.Time) error {
 	if err := os.Chtimes(dlFile, date, date); err != nil {
 		return err
 	}
