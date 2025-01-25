@@ -565,6 +565,8 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 	up := down
 	up.Type = input.KeyUp
 
+	muKbEvents.Lock()
+	defer muKbEvents.Unlock()
 	for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
 		log.Trace().Msgf("Triggering button press event: %v, %v, %v", ev.Key, ev.Type, ev.Modifiers)
 
@@ -578,6 +580,8 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
 func requestDownload2(ctx context.Context) error {
+	muKbEvents.Lock()
+	defer muKbEvents.Unlock()
 	log.Trace().Msg("Requesting download (alternative method)")
 	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
@@ -594,7 +598,7 @@ func requestDownload2(ctx context.Context) error {
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func (s *Session) getPhotoData(ctx context.Context, imageId string) (time.Time, string, error) {
+func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan bool) (time.Time, string, error) {
 	var filename string
 	var dateStr string
 	var timeStr string
@@ -639,15 +643,18 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string) (time.Time, 
 		}
 
 		log.Info().Msg("Date not visible, clicking on i button")
-		//	if err := pressButton(ctx, "I", input.ModifierNone); err != nil {
-		//		return time.Time{}, "", err
-		//	}
-		if err := chromedp.Run(ctx,
-			chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-		); err != nil {
+		if err := func() error {
+			muKbEvents.Lock()
+			defer muKbEvents.Unlock()
+			return chromedp.Run(ctx,
+				chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+			)
+		}(); err != nil {
 			return time.Time{}, "", err
 		}
 		select {
+		case <-cancel:
+			return time.Time{}, "", nil
 		case <-timeout.C:
 			return time.Time{}, "", fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
 		case <-time.After(time.Duration(n) * tick):
@@ -700,6 +707,8 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		if len(nodes) > 0 {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
 			// Click the button to close the warning, otherwise it will block navigating to the next photo
+			muKbEvents.Lock()
+			defer muKbEvents.Unlock()
 			if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
 				return "", err
 			}
@@ -756,7 +765,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			continue
 		}
 		if len(fileEntries) > 1 {
-			return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDirTmp)
+			return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), fileEntries)
 		}
 		if !started {
 			if len(fileEntries) > 0 {
@@ -812,7 +821,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // dlAndMove creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) dlAndMove(ctx context.Context, location, originalFilename string) ([]string, error) {
+func (s *Session) dlAndMove(ctx context.Context, location string, originalFilenameChan chan string, getPhotoDataErr chan error) ([]string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
@@ -828,7 +837,11 @@ func (s *Session) dlAndMove(ctx context.Context, location, originalFilename stri
 	if dlFile != "download" && dlFile != "" {
 		filename = dlFile
 	} else {
-		filename = originalFilename
+		select {
+		case err := <-getPhotoDataErr:
+			return []string{""}, err
+		case filename = <-originalFilenameChan:
+		}
 	}
 
 	if strings.HasSuffix(filename, ".zip") {
@@ -869,6 +882,7 @@ func (s *Session) handleZip(zipfile, outFolder string) ([]string, error) {
 
 var (
 	muNavWaiting             sync.RWMutex
+	muKbEvents               sync.Mutex
 	listenEvents, navWaiting = false, false
 	navDone                  = make(chan bool, 1)
 )
@@ -930,13 +944,21 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if len(entries) == 0 {
-				date, originalFilename, err := s.getPhotoData(ctx, imageId)
-				if err != nil {
-					return err
-				}
+				originalFilenameChan := make(chan string, 1)
+				dateChan := make(chan time.Time, 1)
+				getPhotoDataErr := make(chan error, 1)
+				cancel := make(chan bool, 1)
+				go func() {
+					date, originalFilename, err := s.getPhotoData(ctx, imageId, cancel)
+					if err != nil {
+						getPhotoDataErr <- err
+					}
+					dateChan <- date
+					originalFilenameChan <- originalFilename
+				}()
 
 				// Local dir doesn't exist or is empty, continue downloading
-				filePaths, err := s.dlAndMove(ctx, location, originalFilename)
+				filePaths, err := s.dlAndMove(ctx, location, originalFilenameChan, getPhotoDataErr)
 				if err == errStillProcessing {
 					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
 					// write location to file to be downloaded later (append to .skipped)
@@ -947,9 +969,16 @@ func (s *Session) navN(N int) func(context.Context) error {
 					if _, err := f.WriteString(location + "\n"); err != nil {
 						return err
 					}
+					cancel <- true // cancel getPhotoData
 				} else {
 					if err != nil {
 						return err
+					}
+					var date time.Time
+					select {
+					case err := <-getPhotoDataErr:
+						return err
+					case date = <-dateChan:
 					}
 					if err := s.doFileDateUpdate(ctx, date, filePaths); err != nil {
 						return err
