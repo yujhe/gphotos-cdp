@@ -765,7 +765,11 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			continue
 		}
 		if len(fileEntries) > 1 {
-			return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), fileEntries)
+			files := make([]string, 0)
+			for _, v := range fileEntries {
+				files = append(files, v.Name())
+			}
+			return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), strings.Join(files, ", "))
 		}
 		if !started {
 			if len(fileEntries) > 0 {
@@ -931,6 +935,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if location == prevLocation {
+				log.Info().Msg("NavLeft didn't change the photo, we've reached the end of the timeline")
 				break
 			}
 			prevLocation = location
