@@ -61,7 +61,7 @@ var (
 )
 
 var tick = 500 * time.Millisecond
-var stillProcessingError = errors.New("video is still processing & can be downloaded later")
+var errStillProcessing = errors.New("video is still processing & can be downloaded later")
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
@@ -694,10 +694,26 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
 		var nodes []*cdp.Node
-		chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"]`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx)
+		if err := chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+			return "", err
+		}
 		if len(nodes) > 0 {
-			log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
-			return "", stillProcessingError
+			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			// Click the button to close the warning, otherwise it will block navigating to the next photo
+			if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
+				return "", err
+			}
+			return "", errStillProcessing
+		}
+
+		// This check only works for requestDownload1 method (not requestDownload2)
+		var res bool
+		if err := chromedp.Evaluate("document.body.innerHTML.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
+			return "", err
+		}
+		if res {
+			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			return "", errStillProcessing
 		}
 
 		time.Sleep(tick)
@@ -921,7 +937,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				// Local dir doesn't exist or is empty, continue downloading
 				filePaths, err := s.dlAndMove(ctx, location, originalFilename)
-				if err == stillProcessingError {
+				if err == errStillProcessing {
 					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
 					// write location to file to be downloaded later (append to .skipped)
 					f, err := os.OpenFile(filepath.Join(s.dlDir, ".skipped"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
