@@ -612,42 +612,51 @@ func requestDownload2(ctx context.Context) error {
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func (s *Session) getPhotoData(ctx context.Context, imageId string) (PhotoData, error) {
+func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	var filename string
 	var filesize int64 = 0
 	var dateStr string
 	var timeStr string
 	var tzStr string
 	timeout := time.NewTimer(40 * time.Second)
-	log.Debug().Str("imageId", imageId).Msg("Extracting photo date text and original file name")
+	log.Debug().Msg("Extracting photo date text and original file name")
 
-	// check if element [aria-label^="Date taken:"] is visible, if not click i button
 	var n = 0
 	for {
 		n++
-		var filenameNodes []*cdp.Node
-		var filesizeNodes []*cdp.Node
-		var dateNodes []*cdp.Node
-		var timeNodes []*cdp.Node
-		var tzNodes []*cdp.Node
+		var filesizeStr string
 
-		if err := chromedp.Run(ctx,
-			chromedp.Nodes(`[aria-label^="Filename:"]`, &filenameNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			chromedp.Nodes(`[aria-label^="File size:"]`, &filesizeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="GMT"]`, &tzNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-		); err != nil {
-			return PhotoData{}, err
+		var infoVisible bool = false
+		func() {
+			ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			defer cancel()
+			chromedp.WaitVisible(`[aria-label="Close info"]`, chromedp.ByQuery, chromedp.AtLeast(2)).Do(ctx)
+			infoVisible = true
+		}()
+
+		if infoVisible {
+			if err := chromedp.Run(ctx,
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
+			); err != nil {
+				return PhotoData{}, err
+			}
 		}
 
-		if len(dateNodes) > 0 && len(timeNodes) > 0 && len(filenameNodes) > 0 {
-			filename = strings.TrimPrefix(filenameNodes[0].AttributeValue("aria-label"), "Filename: ")
-			dateStr = strings.TrimPrefix(dateNodes[0].AttributeValue("aria-label"), "Date taken: ")
-			timeStr = strings.TrimPrefix(timeNodes[0].AttributeValue("aria-label"), "Time taken: ")
+		if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
+			filename = strings.TrimPrefix(filename, "Filename: ")
+			dateStr = strings.TrimPrefix(dateStr, "Date taken: ")
+			timeStr = strings.TrimPrefix(timeStr, "Time taken: ")
+			filesizeStr = strings.TrimPrefix(filesizeStr, "File size: ")
+			log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
+			log.Trace().Msgf("Parsing filename: %v", filename)
+			log.Trace().Msgf("Parsing file size: %v", filesizeStr)
 
-			if len(filesizeNodes) > 0 {
-				filesizeStr := strings.TrimPrefix(filesizeNodes[0].AttributeValue("aria-label"), "File size: ")
+			// if len(filesizeNodes) > 0 {
+			if len(filesizeStr) > 0 {
 				var unitFactor int64 = 1
 				if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
 					filesizeStr = s
@@ -666,11 +675,10 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string) (PhotoData, 
 					return PhotoData{}, err
 				}
 				filesize = int64(filesizeFloat * float64(unitFactor))
+				log.Trace().Msgf("Parsed file size: %v bytes", filesize)
 			}
 
-			if len(tzNodes) > 0 {
-				tzStr = tzNodes[0].AttributeValue("aria-label")
-			} else {
+			if len(tzStr) == 0 {
 				// If timezone is not visible, use current timezone (parse date to account for DST)
 				t, err := time.Parse("Jan 2, 2006", dateStr)
 				if err != nil {
@@ -692,10 +700,11 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string) (PhotoData, 
 		}(); err != nil {
 			return PhotoData{}, err
 		}
+
 		select {
 		case <-timeout.C:
-			return PhotoData{}, fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
-		case <-time.After(time.Duration(n) * 50 * time.Millisecond):
+			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
@@ -715,7 +724,7 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string) (PhotoData, 
 		return PhotoData{}, err
 	}
 
-	log.Debug().Str("imageId", imageId).Msgf("Found date: %v and original filename: %v and file size %d", date, filename, filesize)
+	log.Debug().Msgf("Found date: %v and original filename: %v and file size %d", date, filename, filesize)
 
 	return PhotoData{date, filename, filesize}, nil
 }
@@ -844,11 +853,11 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		}
 	}
 
-	log.Debug().Msgf("Download took %v", time.Since(st))
-
-	if err := markDone(s.dlDir, location); err != nil {
+	imageID, err := imageIdFromUrl(location)
+	if err != nil {
 		return "", err
 	}
+	log.Debug().Msgf("Downloaded %v to %s in %dms", filename, imageID, time.Since(st).Milliseconds())
 
 	return filename, nil
 }
@@ -876,42 +885,60 @@ func (s *Session) makeOutDir(location string) (string, error) {
 	return newDir, nil
 }
 
-// dlAndMove creates a directory in s.dlDir named of the item ID found in
+// dlAndProcess creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) dlAndMove(ctx context.Context, location, originalFilename string) ([]string, error) {
+func (s *Session) dlAndProcess(ctx context.Context, location string) error {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-		return []string{""}, err
+		return err
+	}
+
+	data, err := s.getPhotoData(ctx)
+	if err != nil {
+		return err
 	}
 
 	outDir, err := s.makeOutDir(location)
 	if err != nil {
-		return []string{""}, err
+		return err
 	}
 
 	var filename string
 	if dlFile != "download" && dlFile != "" {
 		filename = dlFile
 	} else {
-		filename = originalFilename
+		filename = data.filename
 	}
 
+	var filePaths []string
 	if strings.HasSuffix(filename, ".zip") {
-		filepaths, err := s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
+		var err error
+		filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
 		if err != nil {
-			return []string{""}, err
+			return err
 		}
-		return filepaths, nil
 	} else {
 		newFile := filepath.Join(outDir, filename)
 		log.Debug().Msgf("Moving %v to %v", dlFile, newFile)
 		if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
-			return []string{""}, err
+			return err
 		}
-		return []string{newFile}, nil
+		filePaths = []string{newFile}
 	}
+
+	if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
+		return err
+	}
+
+	for _, f := range filePaths {
+		if err := doRun(f); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -999,13 +1026,8 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if len(entries) == 0 {
-				data, err := s.getPhotoData(ctx, imageId)
-				if err != nil {
-					return err
-				}
-
 				// Local dir doesn't exist or is empty, continue downloading
-				filePaths, err := s.dlAndMove(ctx, location, data.filename)
+				err := s.dlAndProcess(ctx, location)
 				if err == errStillProcessing {
 					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
 					// write location to file to be downloaded later (append to .skipped)
@@ -1016,18 +1038,8 @@ func (s *Session) navN(N int) func(context.Context) error {
 					if _, err := f.WriteString(location + "\n"); err != nil {
 						return err
 					}
-				} else {
-					if err != nil {
-						return err
-					}
-					if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
-						return err
-					}
-					for _, f := range filePaths {
-						if err := doRun(f); err != nil {
-							return err
-						}
-					}
+				} else if err != nil {
+					return err
 				}
 			} else if *fixFlag {
 				var files []fs.FileInfo
@@ -1039,7 +1051,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 					files = append(files, file)
 				}
 
-				data, err := s.getPhotoData(ctx, imageId)
+				data, err := s.getPhotoData(ctx)
 				if err != nil {
 					return err
 				}
