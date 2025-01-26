@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,12 @@ func main() {
 		log.Fatal().Msg(err.Error())
 	}
 	fmt.Println("OK")
+}
+
+type PhotoData struct {
+	date     time.Time
+	filename string
+	fileSize int64
 }
 
 type Session struct {
@@ -603,8 +610,9 @@ func requestDownload2(ctx context.Context) error {
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan bool) (time.Time, string, error) {
+func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan bool) (PhotoData, error) {
 	var filename string
+	var filesize int64 = 0
 	var dateStr string
 	var timeStr string
 	var tzStr string
@@ -616,23 +624,48 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 	for {
 		n++
 		var filenameNodes []*cdp.Node
+		var filesizeNodes []*cdp.Node
 		var dateNodes []*cdp.Node
 		var timeNodes []*cdp.Node
 		var tzNodes []*cdp.Node
 
 		if err := chromedp.Run(ctx,
 			chromedp.Nodes(`[aria-label^="Filename:"]`, &filenameNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+			chromedp.Nodes(`[aria-label^="File size:"]`, &filesizeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"]`, &dateNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]`, &timeNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			chromedp.Nodes(`[aria-label^="Date taken:"] + div [aria-label^="GMT"]`, &tzNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 		); err != nil {
-			return time.Time{}, "", err
+			return PhotoData{}, err
 		}
 
 		if len(dateNodes) > 0 && len(timeNodes) > 0 && len(filenameNodes) > 0 {
 			filename = strings.TrimPrefix(filenameNodes[0].AttributeValue("aria-label"), "Filename: ")
 			dateStr = strings.TrimPrefix(dateNodes[0].AttributeValue("aria-label"), "Date taken: ")
 			timeStr = strings.TrimPrefix(timeNodes[0].AttributeValue("aria-label"), "Time taken: ")
+
+			if len(filesizeNodes) > 0 {
+				filesizeStr := strings.TrimPrefix(filesizeNodes[0].AttributeValue("aria-label"), "File size: ")
+				var unitFactor int64 = 1
+				if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
+					filesizeStr = s
+				} else if s := strings.TrimSuffix(filesizeStr, " KB"); s != filesizeStr {
+					unitFactor = 1024
+					filesizeStr = s
+				} else if s := strings.TrimSuffix(filesizeStr, " MB"); s != filesizeStr {
+					unitFactor = 1024 * 1024
+					filesizeStr = s
+				} else if s := strings.TrimSuffix(filesizeStr, " GB"); s != filesizeStr {
+					unitFactor = 1024 * 1024 * 1024
+					filesizeStr = s
+				}
+				filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(filesizeStr), 64)
+				if err != nil {
+					return PhotoData{}, err
+				}
+				filesize = int64(filesizeFloat * float64(unitFactor))
+			}
+
 			if len(tzNodes) > 0 {
 				tzStr = tzNodes[0].AttributeValue("aria-label")
 			} else {
@@ -655,13 +688,13 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 				chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
 			)
 		}(); err != nil {
-			return time.Time{}, "", err
+			return PhotoData{}, err
 		}
 		select {
 		case <-cancel:
-			return time.Time{}, "", nil
+			return PhotoData{}, nil
 		case <-timeout.C:
-			return time.Time{}, "", fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
+			return PhotoData{}, fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
 		case <-time.After(time.Duration(n) * 50 * time.Millisecond):
 		}
 	}
@@ -679,10 +712,12 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 	}, tzStr)
 	date, err := time.Parse("Jan 2, 2006 Mon, 3:04PM Z0700", datetimeStr)
 	if err != nil {
-		return time.Time{}, "", err
+		return PhotoData{}, err
 	}
-	log.Debug().Str("imageId", imageId).Msgf("Found date: %v and original filename: %v ", date, filename)
-	return date, filename, nil
+
+	log.Debug().Str("imageId", imageId).Msgf("Found date: %v and original filename: %v and file size %d", date, filename, filesize)
+
+	return PhotoData{date, filename, filesize}, nil
 }
 
 // download starts the download of the currently viewed item, and on successful
@@ -973,12 +1008,12 @@ func (s *Session) navN(N int) func(context.Context) error {
 				getPhotoDataErr := make(chan error, 1)
 				cancel := make(chan bool, 1)
 				go func() {
-					date, originalFilename, err := s.getPhotoData(ctx, imageId, cancel)
+					data, err := s.getPhotoData(ctx, imageId, cancel)
 					if err != nil {
 						getPhotoDataErr <- err
 					}
-					dateChan <- date
-					originalFilenameChan <- originalFilename
+					dateChan <- data.date
+					originalFilenameChan <- data.filename
 				}()
 
 				// Local dir doesn't exist or is empty, continue downloading
