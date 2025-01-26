@@ -499,12 +499,12 @@ func doRun(filePath string) error {
 }
 
 // navLeft navigates to the next item to the left
-func navLeft(ctx context.Context) error {
+func navWithAction(ctx context.Context, action chromedp.Action) error {
 	st := time.Now()
 	muNavWaiting.Lock()
 	listenEvents = true
 	muNavWaiting.Unlock()
-	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
+	action.Do(ctx)
 	muNavWaiting.Lock()
 	navWaiting = true
 	muNavWaiting.Unlock()
@@ -515,13 +515,18 @@ func navLeft(ctx context.Context) error {
 			<-t.C
 		}
 	case <-t.C:
-		return errors.New("timeout waiting for left navigation")
+		return errors.New("timeout waiting for navigation")
 	}
 	muNavWaiting.Lock()
 	navWaiting = false
 	muNavWaiting.Unlock()
-	log.Debug().Msgf("navLeft took %dms", time.Since(st).Milliseconds())
+	log.Debug().Msgf("navigation took %dms", time.Since(st).Milliseconds())
 	return nil
+}
+
+// navLeft navigates to the next item to the left
+func navLeft(ctx context.Context) error {
+	return navWithAction(ctx, chromedp.KeyEvent(kb.ArrowLeft))
 }
 
 // markDone saves location in the dldir/{*lastDoneFlag} file, to indicate it is the
@@ -618,7 +623,8 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	var dateStr string
 	var timeStr string
 	var tzStr string
-	timeout := time.NewTimer(40 * time.Second)
+	timeout1 := time.NewTimer(10 * time.Second)
+	timeout2 := time.NewTimer(40 * time.Second)
 	log.Debug().Msg("Extracting photo date text and original file name")
 
 	var n = 0
@@ -661,13 +667,13 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
 					filesizeStr = s
 				} else if s := strings.TrimSuffix(filesizeStr, " KB"); s != filesizeStr {
-					unitFactor = 1024
+					unitFactor = 1000
 					filesizeStr = s
 				} else if s := strings.TrimSuffix(filesizeStr, " MB"); s != filesizeStr {
-					unitFactor = 1024 * 1024
+					unitFactor = 1000 * 1000
 					filesizeStr = s
 				} else if s := strings.TrimSuffix(filesizeStr, " GB"); s != filesizeStr {
-					unitFactor = 1024 * 1024 * 1024
+					unitFactor = 1000 * 1000 * 1000
 					filesizeStr = s
 				}
 				filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(filesizeStr), 64)
@@ -702,9 +708,17 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 		}
 
 		select {
-		case <-timeout.C:
+		case <-timeout1.C:
+			var location string
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
+				return PhotoData{}, err
+			}
+			if err := navWithAction(ctx, chromedp.Navigate(location)); err != nil {
+				return PhotoData{}, err
+			}
+		case <-timeout2.C:
 			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(time.Duration(150+n*12) * time.Millisecond):
 		}
 	}
 
@@ -849,6 +863,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
 			// download is over
 			filename = fileEntries[0].Name()
+			log.Trace().Msgf("Downloaded file %v with size %v", filename, fileEntries[0].Size())
 			break
 		}
 	}
@@ -1068,21 +1083,26 @@ func (s *Session) navN(N int) func(context.Context) error {
 						prevLocation = ""
 						continue
 					}
-					if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.05 {
+					if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.5 {
 						// No handling for this case yet, just log it
 						log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
 					}
 
 					if file.Name() != data.filename {
+						// No handling for this case yet, just log it
 						log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
 					}
 				}
 
 				for _, v := range files {
 					if v.ModTime().Compare(data.date) != 0 {
-						log.Info().Msgf("Setting file date for %v to %v (was %v)", v.Name(), data.date.Format(time.RFC3339), v.ModTime().Format(time.RFC3339))
-						if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
-							return err
+						if *fileDateFlag {
+							log.Info().Msgf("Setting file date for %v/%v to %v (was %v)", imageId, v.Name(), data.date, v.ModTime())
+							if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
+								return err
+							}
+						} else {
+							log.Warn().Msgf("File date mismatch for %s/%s : %v != %v", imageId, v.Name(), v.ModTime(), data.date)
 						}
 					}
 				}
