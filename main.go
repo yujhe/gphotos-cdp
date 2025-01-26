@@ -149,13 +149,16 @@ type Session struct {
 // getLastDone returns the URL of the most recent item that was downloaded in
 // the previous run. If any, it should have been stored in dlDir/.lastdone
 func getLastDone(dlDir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dlDir, ".lastdone"))
+	fn := filepath.Join(dlDir, ".lastdone")
+	data, err := os.ReadFile(fn)
 	if os.IsNotExist(err) {
+		log.Info().Msgf("No .lastdone file found in %v", dlDir)
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
+	log.Debug().Msgf("Read last done file from %v: %v", fn, string(data))
 	return string(data), nil
 }
 
