@@ -755,6 +755,9 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			if v.IsDir() {
 				continue
 			}
+			if strings.HasPrefix(v.Name(), "downloads.html") {
+				continue
+			}
 			info, err := v.Info()
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -803,10 +806,6 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			filename = fileEntries[0].Name()
 			break
 		}
-	}
-
-	if filename == "downloads.html" {
-		return "", fmt.Errorf("downloaded a downloads.html file, which is not expected")
 	}
 
 	log.Debug().Msgf("Download took %v", time.Since(st))
