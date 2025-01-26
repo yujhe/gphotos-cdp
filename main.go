@@ -58,6 +58,7 @@ var (
 	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 	jsonLogFlag  = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	lastDoneFlag = flag.String("lastdone", ".lastdone", "name of file to store last done URL in (in dlDir)")
 )
 
 var tick = 500 * time.Millisecond
@@ -147,18 +148,18 @@ type Session struct {
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
-// the previous run. If any, it should have been stored in dlDir/.lastdone
+// the previous run. If any, it should have been stored in dlDir/{*lastDoneFlag}
 func getLastDone(dlDir string) (string, error) {
-	fn := filepath.Join(dlDir, ".lastdone")
+	fn := filepath.Join(dlDir, *lastDoneFlag)
 	data, err := os.ReadFile(fn)
 	if os.IsNotExist(err) {
-		log.Info().Msgf("No .lastdone file found in %v", dlDir)
+		log.Info().Msgf("No last done file (%v) found in %v", *lastDoneFlag, dlDir)
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	log.Debug().Msgf("Read last done file from %v: %v", fn, string(data))
+	log.Debug().Msgf("Read last done file (%v) from %v: %v", *lastDoneFlag, fn, string(data))
 	return string(data), nil
 }
 
@@ -238,9 +239,6 @@ func (s *Session) cleanDlDir() error {
 	}
 	for _, v := range entries {
 		if v.IsDir() {
-			continue
-		}
-		if v.Name() == ".lastdone" {
 			continue
 		}
 		if err := os.Remove(filepath.Join(s.dlDirTmp, v.Name())); err != nil {
@@ -338,12 +336,12 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 			return nil
 		}
-		lastDoneFile := filepath.Join(s.dlDir, ".lastdone")
+		lastDoneFile := filepath.Join(s.dlDir, *lastDoneFlag)
 		log.Info().Msgf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
 		s.lastDone = ""
 		if err := os.Remove(lastDoneFile); err != nil {
 			if os.IsNotExist(err) {
-				log.Err(err).Msg("Failed to remove .lastdone file because it was already gone.")
+				log.Err(err).Msgf("Failed to remove %v file because it was already gone.", lastDoneFile)
 			}
 			return err
 		}
@@ -517,12 +515,12 @@ func navLeft(ctx context.Context) error {
 	return nil
 }
 
-// markDone saves location in the dldir/.lastdone file, to indicate it is the
+// markDone saves location in the dldir/{*lastDoneFlag} file, to indicate it is the
 // most recent item downloaded
 func markDone(dldir, location string) error {
 	log.Debug().Msgf("Marking %v as done", location)
 
-	oldPath := filepath.Join(dldir, ".lastdone")
+	oldPath := filepath.Join(dldir, *lastDoneFlag)
 	newPath := oldPath + ".bak"
 	if err := os.Rename(oldPath, newPath); err != nil {
 		if !os.IsNotExist(err) {
