@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -59,6 +60,7 @@ var (
 	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 	jsonLogFlag  = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	fixFlag      = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size")
 	lastDoneFlag = flag.String("lastdone", ".lastdone", "name of file to store last done URL in (in dlDir)")
 )
 
@@ -1048,6 +1050,52 @@ func (s *Session) navN(N int) func(context.Context) error {
 						}
 					}
 				}
+			} else if *fixFlag {
+				var files []fs.FileInfo
+				for _, v := range entries {
+					file, err := v.Info()
+					if err != nil {
+						return err
+					}
+					files = append(files, file)
+				}
+
+				data, err := s.getPhotoData(ctx, imageId, nil)
+				if err != nil {
+					return err
+				}
+
+				if len(files) > 1 {
+					log.Debug().Msgf("can't check size because there is more than one file in download dir (probably from a zip file): %v", entries)
+				} else {
+					file := files[0]
+					if file.Size() == 0 {
+						log.Debug().Msgf("Removing empty file %v", file.Name())
+						if err := os.Remove(filepath.Join(s.dlDir, imageId, file.Name())); err != nil {
+							return err
+						}
+						prevLocation = ""
+						continue
+					}
+					if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.05 {
+						// No handling for this case yet, just log it
+						log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
+					}
+
+					if file.Name() != data.filename {
+						log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
+					}
+				}
+
+				for _, v := range files {
+					if v.ModTime().Compare(data.date) != 0 {
+						log.Info().Msgf("Setting file date for %v to %v (was %v)", v.Name(), data.date.Format(time.RFC3339), v.ModTime().Format(time.RFC3339))
+						if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
+							return err
+						}
+					}
+				}
+
 			} else {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
