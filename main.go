@@ -542,7 +542,11 @@ func markDone(dldir, location string) error {
 // viewed item.
 func requestDownload1(ctx context.Context) error {
 	log.Trace().Msg("Requesting download")
-	return pressButton(ctx, "D", input.ModifierShift)
+	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
+		return err
+	}
+	time.Sleep(250 * time.Millisecond)
+	return nil
 }
 
 func pressButton(ctx context.Context, key string, modifier input.Modifier) error {
@@ -585,9 +589,9 @@ func requestDownload2(ctx context.Context) error {
 	log.Trace().Msg("Requesting download (alternative method)")
 	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
-		chromedp.Sleep(tick),
+		chromedp.Sleep(100*time.Millisecond),
 		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-		chromedp.Sleep(tick),
+		chromedp.Sleep(250*time.Millisecond),
 	); err != nil {
 		return err
 	}
@@ -657,7 +661,7 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 			return time.Time{}, "", nil
 		case <-timeout.C:
 			return time.Time{}, "", fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
-		case <-time.After(time.Duration(n) * tick):
+		case <-time.After(time.Duration(n) * 50 * time.Millisecond):
 		}
 	}
 
@@ -725,7 +729,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			return "", errStillProcessing
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 		if !started {
 			select {
 			case <-timeout1.C:
@@ -910,7 +914,7 @@ func listenNavEvents(ctx context.Context) {
 						navDone <- true
 						break
 					}
-					time.Sleep(50 * time.Millisecond)
+					time.Sleep(25 * time.Millisecond)
 				}
 			}()
 		}
