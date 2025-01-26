@@ -612,7 +612,7 @@ func requestDownload2(ctx context.Context) error {
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
-func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan bool) (PhotoData, error) {
+func (s *Session) getPhotoData(ctx context.Context, imageId string) (PhotoData, error) {
 	var filename string
 	var filesize int64 = 0
 	var dateStr string
@@ -693,8 +693,6 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 			return PhotoData{}, err
 		}
 		select {
-		case <-cancel:
-			return PhotoData{}, nil
 		case <-timeout.C:
 			return PhotoData{}, fmt.Errorf("timeout waiting for date to appear for %v (see error.png)", imageId)
 		case <-time.After(time.Duration(n) * 50 * time.Millisecond):
@@ -881,7 +879,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // dlAndMove creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) dlAndMove(ctx context.Context, location string, originalFilenameChan chan string, getPhotoDataErr chan error) ([]string, error) {
+func (s *Session) dlAndMove(ctx context.Context, location, originalFilename string) ([]string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
@@ -897,11 +895,7 @@ func (s *Session) dlAndMove(ctx context.Context, location string, originalFilena
 	if dlFile != "download" && dlFile != "" {
 		filename = dlFile
 	} else {
-		select {
-		case err := <-getPhotoDataErr:
-			return []string{""}, err
-		case filename = <-originalFilenameChan:
-		}
+		filename = originalFilename
 	}
 
 	if strings.HasSuffix(filename, ".zip") {
@@ -1005,21 +999,13 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if len(entries) == 0 {
-				originalFilenameChan := make(chan string, 1)
-				dateChan := make(chan time.Time, 1)
-				getPhotoDataErr := make(chan error, 1)
-				cancel := make(chan bool, 1)
-				go func() {
-					data, err := s.getPhotoData(ctx, imageId, cancel)
-					if err != nil {
-						getPhotoDataErr <- err
-					}
-					dateChan <- data.date
-					originalFilenameChan <- data.filename
-				}()
+				data, err := s.getPhotoData(ctx, imageId)
+				if err != nil {
+					return err
+				}
 
 				// Local dir doesn't exist or is empty, continue downloading
-				filePaths, err := s.dlAndMove(ctx, location, originalFilenameChan, getPhotoDataErr)
+				filePaths, err := s.dlAndMove(ctx, location, data.filename)
 				if err == errStillProcessing {
 					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
 					// write location to file to be downloaded later (append to .skipped)
@@ -1030,18 +1016,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 					if _, err := f.WriteString(location + "\n"); err != nil {
 						return err
 					}
-					cancel <- true // cancel getPhotoData
 				} else {
 					if err != nil {
 						return err
 					}
-					var date time.Time
-					select {
-					case err := <-getPhotoDataErr:
-						return err
-					case date = <-dateChan:
-					}
-					if err := s.doFileDateUpdate(ctx, date, filePaths); err != nil {
+					if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
 						return err
 					}
 					for _, f := range filePaths {
@@ -1060,7 +1039,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 					files = append(files, file)
 				}
 
-				data, err := s.getPhotoData(ctx, imageId, nil)
+				data, err := s.getPhotoData(ctx, imageId)
 				if err != nil {
 					return err
 				}
