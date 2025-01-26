@@ -589,9 +589,9 @@ func requestDownload2(ctx context.Context) error {
 	log.Trace().Msg("Requesting download (alternative method)")
 	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
-		chromedp.Sleep(100*time.Millisecond),
+		chromedp.Sleep(50*time.Millisecond),
 		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-		chromedp.Sleep(250*time.Millisecond),
+		chromedp.Sleep(400*time.Millisecond),
 	); err != nil {
 		return err
 	}
@@ -690,7 +690,7 @@ func (s *Session) getPhotoData(ctx context.Context, imageId string, cancel chan 
 func (s *Session) download(ctx context.Context, location string) (string, error) {
 	st := time.Now()
 
-	if err := requestDownload2(ctx); err != nil {
+	if err := requestDownload1(ctx); err != nil {
 		return "", err
 	}
 
@@ -733,7 +733,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 		if !started {
 			select {
 			case <-timeout1.C:
-				if err := requestDownload1(ctx); err != nil {
+				if err := requestDownload2(ctx); err != nil {
 					return "", err
 				}
 			case <-timeout2.C:
@@ -773,7 +773,18 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			for _, v := range fileEntries {
 				files = append(files, v.Name())
 			}
-			return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), strings.Join(files, ", "))
+			// sometimes we get two files, one with .crdownload extension and one without
+			// this is the same file, so don't error out for this case
+			var sameFile bool
+			if len(files) == 2 {
+				for i, v := range files {
+					fn := strings.TrimSuffix(v, ".crdownload")
+					sameFile = fn == files[1-i]
+				}
+			}
+			if !sameFile {
+				return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), strings.Join(files, ", "))
+			}
 		}
 		if !started {
 			if len(fileEntries) > 0 {
@@ -792,6 +803,10 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			filename = fileEntries[0].Name()
 			break
 		}
+	}
+
+	if filename == "downloads.html" {
+		return "", fmt.Errorf("downloaded a downloads.html file, which is not expected")
 	}
 
 	log.Debug().Msgf("Download took %v", time.Since(st))
