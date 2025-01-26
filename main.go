@@ -725,7 +725,7 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			return "", errStillProcessing
 		}
 
-		time.Sleep(tick)
+		time.Sleep(100 * time.Millisecond)
 		if !started {
 			select {
 			case <-timeout1.C:
@@ -910,7 +910,7 @@ func listenNavEvents(ctx context.Context) {
 						navDone <- true
 						break
 					}
-					time.Sleep(tick)
+					time.Sleep(50 * time.Millisecond)
 				}
 			}()
 		}
