@@ -62,6 +62,7 @@ var (
 	logLevelFlag = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 	fixFlag      = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size")
 	lastDoneFlag = flag.String("lastdone", ".lastdone", "name of file to store last done URL in (in dlDir)")
+	workersFlag  = flag.Int("workers", 10, "number of concurrent downloads allowed")
 )
 
 var tick = 500 * time.Millisecond
@@ -1114,9 +1115,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 				if err := s.processJobs(&asyncJobs, false); err != nil {
 					return err
 				}
-				if len(asyncJobs) < 10 {
+
+				dlCount := 0
+				for _, job := range asyncJobs {
+					if job.errChan != nil && len(job.errChan) == 0 {
+						dlCount++
+					}
+				}
+				if dlCount < *workersFlag {
 					break
 				}
+
 				// Let's wait for some downloads to finish
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -1126,9 +1135,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 		}
 
-		s.processJobs(&asyncJobs, true)
-
-		return nil
+		return s.processJobs(&asyncJobs, true)
 	}
 }
 
