@@ -1084,7 +1084,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 						dlCount++
 					}
 				}
-				log.Debug().Msgf("%d downloads in progress", dlCount)
+				log.Debug().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(asyncJobs)-dlCount)
 				if dlCount < *workersFlag {
 					break
 				}
