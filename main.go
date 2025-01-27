@@ -66,6 +66,7 @@ var (
 
 var tick = 500 * time.Millisecond
 var errStillProcessing = errors.New("video is still processing & can be downloaded later")
+var errRetry = errors.New("retry")
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
@@ -139,6 +140,11 @@ type PhotoData struct {
 	date     time.Time
 	filename string
 	fileSize int64
+}
+
+type Job struct {
+	location string
+	errChan  chan error
 }
 
 type Session struct {
@@ -903,57 +909,66 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // dlAndProcess creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) dlAndProcess(ctx context.Context, location string) error {
+func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
+	var data PhotoData
+	errChan := make(chan error, 1)
 	dlFile, err := s.download(ctx, location)
+	if err == nil {
+		data, err = s.getPhotoData(ctx)
+	}
 	if err != nil {
 		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-		return err
+		errChan <- err
+		return errChan
 	}
 
-	data, err := s.getPhotoData(ctx)
-	if err != nil {
-		return err
-	}
-
-	outDir, err := s.makeOutDir(location)
-	if err != nil {
-		return err
-	}
-
-	var filename string
-	if dlFile != "download" && dlFile != "" {
-		filename = dlFile
-	} else {
-		filename = data.filename
-	}
-
-	var filePaths []string
-	if strings.HasSuffix(filename, ".zip") {
-		var err error
-		filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
+	go func() {
+		outDir, err := s.makeOutDir(location)
 		if err != nil {
-			return err
+			errChan <- err
 		}
-	} else {
-		newFile := filepath.Join(outDir, filename)
-		log.Debug().Msgf("Moving %v to %v", dlFile, newFile)
-		if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
-			return err
+
+		var filename string
+		if dlFile != "download" && dlFile != "" {
+			filename = dlFile
+		} else {
+			filename = data.filename
 		}
-		filePaths = []string{newFile}
-	}
 
-	if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
-		return err
-	}
-
-	for _, f := range filePaths {
-		if err := doRun(f); err != nil {
-			return err
+		var filePaths []string
+		if strings.HasSuffix(filename, ".zip") {
+			var err error
+			filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
+			if err != nil {
+				errChan <- err
+				return
+			}
+		} else {
+			newFile := filepath.Join(outDir, filename)
+			log.Debug().Msgf("Moving %v to %v", dlFile, newFile)
+			if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
+				errChan <- err
+				return
+			}
+			filePaths = []string{newFile}
 		}
-	}
 
-	return nil
+		if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
+			errChan <- err
+			return
+		}
+
+		for _, f := range filePaths {
+			if err := doRun(f); err != nil {
+				errChan <- err
+				return
+			}
+		}
+
+		errChan <- nil
+	}()
+
+	return errChan
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -1021,6 +1036,8 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 		listenNavEvents(ctx)
 
+		var asyncJobs []Job
+
 		var location, prevLocation string
 		for {
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
@@ -1040,21 +1057,27 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+
+			var job chan error = nil
 			if len(entries) == 0 {
 				// Local dir doesn't exist or is empty, continue downloading
-				err := s.dlAndProcess(ctx, location)
-				if err == errStillProcessing {
-					log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
-					// write location to file to be downloaded later (append to .skipped)
-					f, err := os.OpenFile(filepath.Join(s.dlDir, ".skipped"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-					if err != nil {
+				job = s.dlAndProcess(ctx, location)
+				select {
+				case err := <-job:
+					if err == errStillProcessing {
+						log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
+						// write location to file to be downloaded later (append to .skipped)
+						f, err := os.OpenFile(filepath.Join(s.dlDir, ".skipped"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+						if err != nil {
+							return err
+						}
+						if _, err := f.WriteString(location + "\n"); err != nil {
+							return err
+						}
+					} else if err != nil {
 						return err
 					}
-					if _, err := f.WriteString(location + "\n"); err != nil {
-						return err
-					}
-				} else if err != nil {
-					return err
+				default:
 				}
 			} else if *fixFlag {
 				var files []fs.FileInfo
@@ -1066,54 +1089,21 @@ func (s *Session) navN(N int) func(context.Context) error {
 					files = append(files, file)
 				}
 
-				data, err := s.getPhotoData(ctx)
-				if err != nil {
-					return err
-				}
-
-				if len(files) > 1 {
-					log.Debug().Msgf("can't check size because there is more than one file in download dir (probably from a zip file): %v", entries)
-				} else {
-					file := files[0]
-					if file.Size() == 0 {
-						log.Debug().Msgf("Removing empty file %v", file.Name())
-						if err := os.Remove(filepath.Join(s.dlDir, imageId, file.Name())); err != nil {
-							return err
-						}
+				if err := s.checkFile(ctx, files, imageId); err != nil {
+					if err == errRetry {
 						prevLocation = ""
 						continue
 					}
-					if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.5 {
-						// No handling for this case yet, just log it
-						log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
-					}
-
-					if file.Name() != data.filename {
-						// No handling for this case yet, just log it
-						log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
-					}
+					return err
 				}
-
-				for _, v := range files {
-					if v.ModTime().Compare(data.date) != 0 {
-						if *fileDateFlag {
-							log.Info().Msgf("Setting file date for %v/%v to %v (was %v)", imageId, v.Name(), data.date, v.ModTime())
-							if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
-								return err
-							}
-						} else {
-							log.Warn().Msgf("File date mismatch for %s/%s : %v != %v", imageId, v.Name(), v.ModTime(), data.date)
-						}
-					}
-				}
-
 			} else {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
 
-			if err := markDone(s.dlDir, location); err != nil {
-				return err
-			}
+			asyncJobs = append(asyncJobs, Job{location, job})
+
+			s.processJobs(&asyncJobs, false)
+
 			n++
 			if N > 0 && n >= N {
 				break
@@ -1126,8 +1116,85 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
+
+		s.processJobs(&asyncJobs, true)
+
 		return nil
 	}
+}
+
+func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
+	for _, job := range *jobs {
+		if job.errChan == nil {
+			if err := markDone(s.dlDir, job.location); err != nil {
+				return err
+			}
+			*jobs = (*jobs)[1:]
+			continue
+		}
+		select {
+		case err := <-job.errChan:
+			if err != nil {
+				return err
+			}
+			if err := markDone(s.dlDir, job.location); err != nil {
+				return err
+			}
+			*jobs = (*jobs)[1:]
+		default:
+			if waitForAll {
+				time.Sleep(50 * time.Millisecond)
+			} else {
+				return nil
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId string) error {
+	data, err := s.getPhotoData(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(files) > 1 {
+		log.Debug().Msgf("can't check size because there is more than one file in download dir (probably from a zip file): %v", files)
+	} else {
+		file := files[0]
+		if file.Size() == 0 {
+			log.Debug().Msgf("Removing empty file %v", file.Name())
+			if err := os.Remove(filepath.Join(s.dlDir, imageId, file.Name())); err != nil {
+				return err
+			}
+			return errRetry
+		}
+		if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.5 {
+			// No handling for this case yet, just log it
+			log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
+		}
+
+		if file.Name() != data.filename {
+			// No handling for this case yet, just log it
+			log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
+		}
+	}
+
+	for _, v := range files {
+		if v.ModTime().Compare(data.date) != 0 {
+			if *fileDateFlag {
+				log.Info().Msgf("Setting file date for %v/%v to %v (was %v)", imageId, v.Name(), data.date, v.ModTime())
+				if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
+					return err
+				}
+			} else {
+				log.Warn().Msgf("File date mismatch for %s/%s : %v != %v", imageId, v.Name(), v.ModTime(), data.date)
+			}
+		}
+	}
+
+	return nil
 }
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
