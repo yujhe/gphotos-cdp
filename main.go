@@ -148,6 +148,15 @@ type Job struct {
 	errChan  chan error
 }
 
+type NewDownload struct {
+	GUID string
+}
+
+type DownloadChannels struct {
+	newdl    chan NewDownload
+	progress chan bool
+}
+
 type Session struct {
 	parentContext context.Context
 	parentCancel  context.CancelFunc
@@ -161,6 +170,8 @@ type Session struct {
 	// firstItem is the most recent item in the feed. It is determined at the
 	// beginning of the run, and is used as the final sentinel.
 	firstItem string
+	nextDl    chan DownloadChannels
+	err       chan error
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -213,6 +224,8 @@ func NewSession() (*Session, error) {
 		dlDir:      dlDir,
 		dlDirTmp:   dlDirTmp,
 		lastDone:   lastDone,
+		nextDl:     make(chan DownloadChannels, 1),
+		err:        make(chan error, 1),
 	}
 	return s, nil
 }
@@ -268,7 +281,7 @@ func (s *Session) cleanDlDir() error {
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
-		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDirTmp),
+		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.dlDirTmp).WithEventsEnabled(true),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Debug().Msg("pre-navigate")
 			return nil
@@ -753,26 +766,28 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 // download starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s *Session) download(ctx context.Context, location string) (string, error) {
-	st := time.Now()
+func (s *Session) download(ctx context.Context, location string) (string, chan bool, error) {
+	if len(s.nextDl) != 0 {
+		return "", nil, errors.New("unexpected: nextDl channel is not empty")
+	}
+
+	dlStarted := make(chan NewDownload, 1)
+	dlProgress := make(chan bool, 1)
+	s.nextDl <- DownloadChannels{dlStarted, dlProgress}
 
 	if err := requestDownload1(ctx); err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	timeout1 := time.NewTimer(30 * time.Second)
 	timeout2 := time.NewTimer(60 * time.Second)
-	deadline := time.Now().Add(time.Minute)
 
-	var filename string
-	started := false
-	var fileSize int64
 	for {
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
 		var nodes []*cdp.Node
 		if err := chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if len(nodes) > 0 {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
@@ -780,108 +795,34 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			muKbEvents.Lock()
 			defer muKbEvents.Unlock()
 			if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
-				return "", err
+				return "", nil, err
 			}
-			return "", errStillProcessing
+			return "", nil, errStillProcessing
 		}
 
 		// This check only works for requestDownload1 method (not requestDownload2)
 		var res bool
 		if err := chromedp.Evaluate("document.body.innerHTML.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if res {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
-			return "", errStillProcessing
+			return "", nil, errStillProcessing
 		}
 
-		time.Sleep(25 * time.Millisecond)
-		if !started {
-			select {
-			case <-timeout1.C:
-				if err := requestDownload2(ctx); err != nil {
-					return "", err
-				}
-			case <-timeout2.C:
-				return "", fmt.Errorf("timeout waiting for download to start for %v", location)
-			default:
+		select {
+		case <-timeout1.C:
+			if err := requestDownload2(ctx); err != nil {
+				return "", nil, err
 			}
-		}
-
-		if started && time.Now().After(deadline) {
-			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDirTmp)
-		}
-
-		entries, err := os.ReadDir(s.dlDirTmp)
-		if err != nil {
-			return "", err
-		}
-		var fileEntries []os.FileInfo
-		for _, v := range entries {
-			if v.IsDir() {
-				continue
-			}
-			if strings.HasPrefix(v.Name(), "downloads.html") {
-				continue
-			}
-			info, err := v.Info()
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					continue
-				} else {
-					return "", err
-				}
-			}
-			fileEntries = append(fileEntries, info)
-		}
-		if len(fileEntries) < 1 {
-			continue
-		}
-		if len(fileEntries) > 1 {
-			files := make([]string, 0)
-			for _, v := range fileEntries {
-				files = append(files, v.Name())
-			}
-			// sometimes we get two files, one with .crdownload extension and one without
-			// this is the same file, so don't error out for this case
-			var sameFile bool
-			if len(files) == 2 {
-				for i, v := range files {
-					fn := strings.TrimSuffix(v, ".crdownload")
-					sameFile = fn == files[1-i]
-				}
-			}
-			if !sameFile {
-				return "", fmt.Errorf("more than one file (%d) in download dir: %v", len(fileEntries), strings.Join(files, ", "))
-			}
-		}
-		if !started {
-			if len(fileEntries) > 0 {
-				started = true
-				deadline = time.Now().Add(time.Minute)
-			}
-		}
-		newFileSize := fileEntries[0].Size()
-		if newFileSize > fileSize {
-			// push back the timeout as long as we make progress
-			deadline = time.Now().Add(time.Minute)
-			fileSize = newFileSize
-		}
-		if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
-			// download is over
-			filename = fileEntries[0].Name()
-			log.Trace().Msgf("Downloaded file %v with size %v", filename, fileEntries[0].Size())
-			break
+		case <-timeout2.C:
+			return "", nil, fmt.Errorf("timeout waiting for download to start for %v", location)
+		case newDl := <-dlStarted:
+			return newDl.GUID, dlProgress, nil
+		default:
+			time.Sleep(25 * time.Millisecond)
 		}
 	}
-
-	imageID, err := imageIdFromUrl(location)
-	if err != nil {
-		return "", err
-	}
-	log.Debug().Msgf("Downloaded %v to %s in %dms", filename, imageID, time.Since(st).Milliseconds())
-
-	return filename, nil
 }
 
 func imageIdFromUrl(location string) (string, error) {
@@ -913,7 +854,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
 	var data PhotoData
 	errChan := make(chan error, 1)
-	dlFile, err := s.download(ctx, location)
+	dlFile, dlProgress, err := s.download(ctx, location)
 	if err == nil {
 		data, err = s.getPhotoData(ctx)
 	}
@@ -924,17 +865,29 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 	}
 
 	go func() {
+		dlTimeout := time.NewTimer(time.Minute)
+	dl:
+		for {
+			select {
+			case p := <-dlProgress:
+				if p {
+					break dl
+				} else {
+					dlTimeout.Reset(time.Minute)
+				}
+			case <-dlTimeout.C:
+				errChan <- fmt.Errorf("timeout waiting for download to complete for %v", location)
+				return
+			}
+		}
+
 		outDir, err := s.makeOutDir(location)
 		if err != nil {
 			errChan <- err
+			return
 		}
 
-		var filename string
-		if dlFile != "download" && dlFile != "" {
-			filename = dlFile
-		} else {
-			filename = data.filename
-		}
+		filename := data.filename
 
 		var filePaths []string
 		if strings.HasSuffix(filename, ".zip") {
@@ -1036,6 +989,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 		}
 
 		listenNavEvents(ctx)
+		s.startDlListener(ctx)
 
 		var asyncJobs []Job
 
@@ -1237,4 +1191,40 @@ func (s *Session) setFileDate(dlFile string, date time.Time) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Session) startDlListener(ctx context.Context) {
+	dls := make(map[string]DownloadChannels)
+	chromedp.ListenTarget(ctx, func(v interface{}) {
+		if ev, ok := v.(*browser.EventDownloadWillBegin); ok {
+			log.Debug().Str("GUID", ev.GUID).Msgf("Download of %s started", ev.SuggestedFilename)
+			if ev.SuggestedFilename == "downloads.html" {
+				return
+			}
+			if len(s.nextDl) == 0 {
+				s.err <- fmt.Errorf("unexpected download of %s", ev.SuggestedFilename)
+			}
+			dls[ev.GUID] = <-s.nextDl
+			dls[ev.GUID].newdl <- NewDownload{ev.GUID}
+		}
+	})
+
+	chromedp.ListenTarget(ctx, func(v interface{}) {
+		if ev, ok := v.(*browser.EventDownloadProgress); ok {
+			log.Trace().Msgf("Download event: %v", ev)
+			if ev.State == browser.DownloadProgressStateInProgress {
+				log.Trace().Str("GUID", ev.GUID).Msgf("Download progress")
+				if len(dls[ev.GUID].progress) == 0 {
+					dls[ev.GUID].progress <- false
+				}
+			}
+			if ev.State == browser.DownloadProgressStateCompleted {
+				log.Debug().Str("GUID", ev.GUID).Msgf("Download completed")
+				go func() {
+					dls[ev.GUID].progress <- true
+					delete(dls, ev.GUID)
+				}()
+			}
+		}
+	})
 }
