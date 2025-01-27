@@ -791,6 +791,10 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 		}
 		if len(nodes) > 0 {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			select {
+			case <-s.nextDl:
+			default:
+			}
 			// Click the button to close the warning, otherwise it will block navigating to the next photo
 			muKbEvents.Lock()
 			defer muKbEvents.Unlock()
@@ -807,6 +811,10 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 		}
 		if res {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			select {
+			case <-s.nextDl:
+			default:
+			}
 			return "", nil, errStillProcessing
 		}
 
@@ -1076,6 +1084,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 						dlCount++
 					}
 				}
+				log.Debug().Msgf("%d downloads in progress", dlCount)
 				if dlCount < *workersFlag {
 					break
 				}
@@ -1223,6 +1232,7 @@ func (s *Session) startDlListener(ctx context.Context) {
 			if ev.State == browser.DownloadProgressStateCompleted {
 				log.Debug().Str("GUID", ev.GUID).Msgf("Download completed")
 				go func() {
+					time.Sleep(time.Second)
 					dls[ev.GUID].progress <- true
 					delete(dls, ev.GUID)
 				}()
