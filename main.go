@@ -1102,14 +1102,23 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 			asyncJobs = append(asyncJobs, Job{location, job})
 
-			s.processJobs(&asyncJobs, false)
-
 			n++
 			if N > 0 && n >= N {
 				break
 			}
 			if strings.HasSuffix(location, s.firstItem) {
 				break
+			}
+
+			for {
+				if err := s.processJobs(&asyncJobs, false); err != nil {
+					return err
+				}
+				if len(asyncJobs) < 10 {
+					break
+				}
+				// Let's wait for some downloads to finish
+				time.Sleep(50 * time.Millisecond)
 			}
 
 			if err := navLeft(ctx); err != nil {
