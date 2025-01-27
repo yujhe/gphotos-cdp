@@ -676,7 +676,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			filename = strings.TrimPrefix(filename, "Filename: ")
 			dateStr = strings.TrimPrefix(dateStr, "Date taken: ")
 			timeStr = strings.TrimPrefix(timeStr, "Time taken: ")
-			filesizeStr = strings.TrimPrefix(filesizeStr, "File size: ")
+			filesizeStr = strings.Replace(strings.TrimPrefix(filesizeStr, "File size: "), ",", "", -1)
 			log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
 			log.Trace().Msgf("Parsing filename: %v", filename)
 			log.Trace().Msgf("Parsing file size: %v", filesizeStr)
@@ -1111,6 +1111,8 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 				return err
 			}
 			*jobs = (*jobs)[1:]
+		case err := <-s.err:
+			return err
 		default:
 			if waitForAll {
 				time.Sleep(50 * time.Millisecond)
