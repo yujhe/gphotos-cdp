@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -236,6 +237,7 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 		chromedp.DisableGPU,
 		chromedp.UserDataDir(s.profileDir),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("lang", "en-US,en"),
 	)
 
 	if !*headlessFlag {
@@ -681,7 +683,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			log.Trace().Msgf("Parsing filename: %v", filename)
 			log.Trace().Msgf("Parsing file size: %v", filesizeStr)
 
-			// if len(filesizeNodes) > 0 {
+			// Parse file size
 			if len(filesizeStr) > 0 {
 				var unitFactor int64 = 1
 				if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
@@ -704,8 +706,17 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				log.Trace().Msgf("Parsed file size: %v bytes", filesize)
 			}
 
+			// Handle dates from current year (UI doesn't show current year so we add it)
+			if m, err := regexp.MatchString(`\d{4}$`, dateStr); err == nil && !m {
+				dateStr += fmt.Sprintf(", %d", time.Now().Year())
+			}
+
+			// Handle special days like "Yesterday" and "Today"
+			timeStr = strings.Replace(timeStr, "Yesterday", time.Now().AddDate(0, 0, -1).Format("Mon"), -1)
+			timeStr = strings.Replace(timeStr, "Today", time.Now().Format("Mon"), -1)
+
+			// If timezone is not visible, use current timezone (parse provided date to account for DST)
 			if len(tzStr) == 0 {
-				// If timezone is not visible, use current timezone (parse date to account for DST)
 				t, err := time.Parse("Jan 2, 2006", dateStr)
 				if err != nil {
 					t = time.Now()
