@@ -150,7 +150,8 @@ type Job struct {
 }
 
 type NewDownload struct {
-	GUID string
+	GUID              string
+	suggestedFilename string
 }
 
 type DownloadChannels struct {
@@ -777,9 +778,9 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 // download starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s *Session) download(ctx context.Context, location string) (string, chan bool, error) {
+func (s *Session) download(ctx context.Context, location string) (NewDownload, chan bool, error) {
 	if len(s.nextDl) != 0 {
-		return "", nil, errors.New("unexpected: nextDl channel is not empty")
+		return NewDownload{}, nil, errors.New("unexpected: nextDl channel is not empty")
 	}
 
 	dlStarted := make(chan NewDownload, 1)
@@ -787,7 +788,7 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 	s.nextDl <- DownloadChannels{dlStarted, dlProgress}
 
 	if err := requestDownload1(ctx); err != nil {
-		return "", nil, err
+		return NewDownload{}, nil, err
 	}
 
 	timeout1 := time.NewTimer(30 * time.Second)
@@ -798,7 +799,7 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 		// This check only works for requestDownload2 method (not requestDownload1)
 		var nodes []*cdp.Node
 		if err := chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
-			return "", nil, err
+			return NewDownload{}, nil, err
 		}
 		if len(nodes) > 0 {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
@@ -810,15 +811,15 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 			muKbEvents.Lock()
 			defer muKbEvents.Unlock()
 			if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
-				return "", nil, err
+				return NewDownload{}, nil, err
 			}
-			return "", nil, errStillProcessing
+			return NewDownload{}, nil, errStillProcessing
 		}
 
 		// This check only works for requestDownload1 method (not requestDownload2)
 		var res bool
 		if err := chromedp.Evaluate("document.body.innerHTML.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
-			return "", nil, err
+			return NewDownload{}, nil, err
 		}
 		if res {
 			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
@@ -826,18 +827,18 @@ func (s *Session) download(ctx context.Context, location string) (string, chan b
 			case <-s.nextDl:
 			default:
 			}
-			return "", nil, errStillProcessing
+			return NewDownload{}, nil, errStillProcessing
 		}
 
 		select {
 		case <-timeout1.C:
 			if err := requestDownload2(ctx); err != nil {
-				return "", nil, err
+				return NewDownload{}, nil, err
 			}
 		case <-timeout2.C:
-			return "", nil, fmt.Errorf("timeout waiting for download to start for %v", location)
+			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", location)
 		case newDl := <-dlStarted:
-			return newDl.GUID, dlProgress, nil
+			return newDl, dlProgress, nil
 		default:
 			time.Sleep(25 * time.Millisecond)
 		}
@@ -873,7 +874,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
 	var data PhotoData
 	errChan := make(chan error, 1)
-	dlFile, dlProgress, err := s.download(ctx, location)
+	dl, dlProgress, err := s.download(ctx, location)
 	if err == nil {
 		data, err = s.getPhotoData(ctx)
 	}
@@ -909,17 +910,17 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 		filename := data.filename
 
 		var filePaths []string
-		if strings.HasSuffix(filename, ".zip") {
+		if strings.HasSuffix(dl.suggestedFilename, ".zip") {
 			var err error
-			filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dlFile), outDir)
+			filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dl.GUID), outDir)
 			if err != nil {
 				errChan <- err
 				return
 			}
 		} else {
 			newFile := filepath.Join(outDir, filename)
-			log.Debug().Msgf("Moving %v to %v", dlFile, newFile)
-			if err := os.Rename(filepath.Join(s.dlDirTmp, dlFile), newFile); err != nil {
+			log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
+			if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
 				errChan <- err
 				return
 			}
@@ -1227,7 +1228,7 @@ func (s *Session) startDlListener(ctx context.Context) {
 				s.err <- fmt.Errorf("unexpected download of %s", ev.SuggestedFilename)
 			}
 			dls[ev.GUID] = <-s.nextDl
-			dls[ev.GUID].newdl <- NewDownload{ev.GUID}
+			dls[ev.GUID].newdl <- NewDownload{ev.GUID, ev.SuggestedFilename}
 		}
 	})
 
