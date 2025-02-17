@@ -129,6 +129,11 @@ func main() {
 		return
 	}
 
+	if err := s.checkLocale(ctx); err != nil {
+		log.Err(err).Msg("checking the locale failed")
+		return
+	}
+
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
@@ -239,6 +244,7 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 		chromedp.UserDataDir(s.profileDir),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("lang", "en-US,en"),
+		chromedp.Flag("accept-lang", "en-US,en"),
 	)
 
 	if !*headlessFlag {
@@ -320,6 +326,43 @@ func (s *Session) login(ctx context.Context) error {
 			return nil
 		}),
 	)
+}
+
+func (s *Session) checkLocale(ctx context.Context) error {
+	var locale string
+
+	err := chromedp.Run(ctx,
+		chromedp.EvaluateAsDevTools(`
+				(function() {
+					// Try to get locale from html lang attribute
+					const htmlLang = document.documentElement.lang;
+					if (htmlLang) return htmlLang;
+					
+					// Try to get locale from meta tags
+					const metaLang = document.querySelector('meta[property="og:locale"]');
+					if (metaLang) return metaLang.content;
+					
+					// Try to get locale from Google's internal data
+					const scripts = document.getElementsByTagName('script');
+					for (const script of scripts) {
+						if (script.text && script.text.includes('"locale"')) {
+							const match = script.text.match(/"locale":\s*"([^"]+)"/);
+							if (match) return match[1];
+						}
+					}
+					
+					return "unknown";
+				})()
+			`, &locale),
+	)
+
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to detect account locale")
+	} else if !strings.HasPrefix(locale, "en") {
+		log.Warn().Msgf("Detected Google account locale %v, this is likely to cause issues. Please change account language to English (en)", locale)
+	}
+
+	return nil
 }
 
 func dlScreenshot(ctx context.Context, filePath string) {
