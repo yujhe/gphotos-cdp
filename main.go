@@ -968,8 +968,6 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 			return
 		}
 
-		filename := data.filename
-
 		var filePaths []string
 		if strings.HasSuffix(dl.suggestedFilename, ".zip") {
 			var err error
@@ -979,6 +977,12 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 				return
 			}
 		} else {
+			var filename string
+			if dl.suggestedFilename != "download" && dl.suggestedFilename != "" {
+				filename = dl.suggestedFilename
+			} else {
+				filename = data.filename
+			}
 			newFile := filepath.Join(outDir, filename)
 			log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
 			if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
