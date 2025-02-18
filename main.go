@@ -27,6 +27,7 @@ import (
 	"io/fs"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -889,11 +890,22 @@ func (s *Session) download(ctx context.Context, location string) (NewDownload, c
 }
 
 func imageIdFromUrl(location string) (string, error) {
-	parts := strings.Split(location, "/")
-	if len(parts) < 5 {
-		return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
+	// Parse the URL
+	u, err := url.Parse(location)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL %v: %w", location, err)
 	}
-	return parts[4], nil
+	
+	// Split the path into segments
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	
+	// Look for "photo" segment and ensure there's a following segment
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "photo" {
+			return parts[i+1], nil
+		}
+	}
+	return "", fmt.Errorf("could not find /photo/{imageId} pattern in URL: %v", location)
 }
 
 // makeOutDir creates a directory in s.dlDir named of the item ID found in
