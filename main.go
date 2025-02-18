@@ -1238,14 +1238,21 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 			}
 			return errRetry
 		}
-		if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.15 {
-			// No handling for this case yet, just log it
-			log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
-		}
 
+		hasOriginal := false
 		if file.Name() != data.filename {
 			// No handling for this case yet, just log it
-			log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
+			if filepath.Base(file.Name()) == filepath.Base(data.filename) {
+				hasOriginal = true
+				log.Info().Msgf("Filename mismatch for %s : %v != %v (likely due to downloading altered version of photo instead of original)", imageId, file.Name(), data.filename)
+			} else {
+				log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
+			}
+		}
+
+		if !hasOriginal && math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.15 {
+			// No handling for this case yet, just log it
+			log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
 		}
 	}
 
