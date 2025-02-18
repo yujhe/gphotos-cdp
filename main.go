@@ -65,6 +65,7 @@ var (
 	fixFlag      = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size")
 	lastDoneFlag = flag.String("lastdone", ".lastdone", "name of file to store last done URL in (in dlDir)")
 	workersFlag  = flag.Int("workers", 10, "number of concurrent downloads allowed")
+	albumIdFlag  = flag.String("album", "", "ID of album to download, has no effect if lastdone file is populated")
 )
 
 var tick = 500 * time.Millisecond
@@ -175,11 +176,8 @@ type Session struct {
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
 	lastDone string
-	// firstItem is the most recent item in the feed. It is determined at the
-	// beginning of the run, and is used as the final sentinel.
-	firstItem string
-	nextDl    chan DownloadChannels
-	err       chan error
+	nextDl   chan DownloadChannels
+	err      chan error
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -393,6 +391,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
+	// This is only used to ensure page is loaded
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
 	}
@@ -403,6 +402,12 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 		return nil
 	}
+
+	relPath := ""
+	if *albumIdFlag != "" {
+		relPath = "album/" + *albumIdFlag
+	}
+
 	if s.lastDone != "" {
 		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(s.lastDone))
 		if err != nil {
@@ -421,18 +426,18 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			}
 			return err
 		}
-
-		// restart from scratch
-		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"))
-		if err != nil {
-			return err
-		}
-		code := resp.Status
-		if code != http.StatusOK {
-			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/", code)
-		}
-		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 	}
+
+	// restart from scratch
+	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
+	if err != nil {
+		return err
+	}
+	code := resp.Status
+	if code != http.StatusOK {
+		return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
+	}
+	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
 	log.Debug().Msg("Finding end of page")
 
@@ -454,6 +459,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 func (s *Session) setFirstItem(ctx context.Context) error {
 	// wait for page to be loaded, i.e. that we can make an element active by using
 	// the right arrow key.
+	var firstItem string
 	for {
 		log.Trace().Msg("Attempting to find first item")
 		attributes := make(map[string]string)
@@ -474,10 +480,10 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 			continue
 		}
 
-		s.firstItem = strings.TrimPrefix(photoHref, "./photo/")
+		firstItem = strings.TrimPrefix(photoHref, "./photo/")
 		break
 	}
-	log.Debug().Msgf("Page loaded, most recent item in the feed is: %s", s.firstItem)
+	log.Debug().Msgf("Page loaded, most recent item in the feed is: %s", firstItem)
 	return nil
 }
 
@@ -1128,9 +1134,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 			n++
 			if N > 0 && n >= N {
-				break
-			}
-			if strings.HasSuffix(location, s.firstItem) {
 				break
 			}
 
