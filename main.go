@@ -1197,6 +1197,8 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 
 	if len(files) > 1 {
 		log.Debug().Msgf("can't check size because there is more than one file in download dir (probably from a zip file): %v", files)
+	} else if data.fileSize == 0 {
+		log.Debug().Msgf("can't check size because the parsed file size is 0: %v", files[0].Name())
 	} else {
 		file := files[0]
 		if file.Size() == 0 {
@@ -1206,7 +1208,7 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 			}
 			return errRetry
 		}
-		if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.5 {
+		if math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.15 {
 			// No handling for this case yet, just log it
 			log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
 		}
