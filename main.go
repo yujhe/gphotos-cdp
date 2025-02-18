@@ -895,10 +895,10 @@ func imageIdFromUrl(location string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid URL %v: %w", location, err)
 	}
-	
+
 	// Split the path into segments
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	
+
 	// Look for "photo" segment and ensure there's a following segment
 	for i := 0; i < len(parts)-1; i++ {
 		if parts[i] == "photo" {
@@ -1068,16 +1068,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 		var asyncJobs []Job
 
-		var location, prevLocation string
 		for {
+			var location string
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
-			if location == prevLocation {
-				log.Info().Msg("NavLeft didn't change the photo, we've reached the end of the timeline")
-				break
-			}
-			prevLocation = location
 
 			imageId, err := imageIdFromUrl(location)
 			if err != nil {
@@ -1121,7 +1116,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				if err := s.checkFile(ctx, files, imageId); err != nil {
 					if err == errRetry {
-						prevLocation = ""
 						continue
 					}
 					return err
@@ -1158,6 +1152,15 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				// Let's wait for some downloads to finish
 				time.Sleep(50 * time.Millisecond)
+			}
+
+			var morePhotosAvailable bool
+			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
+				return fmt.Errorf("error checking for previous photo: %v", err)
+			}
+			if !morePhotosAvailable {
+				log.Info().Msg("no more photos available, we've reached the end of the timeline")
+				return nil
 			}
 
 			if err := navLeft(ctx); err != nil {
