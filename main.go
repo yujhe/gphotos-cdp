@@ -1218,7 +1218,7 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 	}
 
 	for _, v := range files {
-		if v.ModTime().Compare(data.date) != 0 {
+		if math.Abs(v.ModTime().Sub(data.date).Seconds()) > 1 {
 			if *fileDateFlag {
 				log.Info().Msgf("Setting file date for %v/%v to %v (was %v)", imageId, v.Name(), data.date, v.ModTime())
 				if err := s.setFileDate(filepath.Join(s.dlDir, imageId, v.Name()), data.date); err != nil {
