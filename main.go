@@ -1162,11 +1162,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return fmt.Errorf("error checking for previous photo: %v", err)
 			}
 			if !morePhotosAvailable {
-				log.Info().Msg("no more photos available, we've reached the end of the timeline")
-				break
-			}
-
-			if err := navLeft(ctx); err != nil {
+				log.Debug().Msg("no left button visible, but trying nav left anyway to avoid false positives")
+				oldLocation := location
+				navLeft(ctx)
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if location == oldLocation {
+					log.Info().Msg("no more photos available, we've reached the end of the timeline")
+					break
+				}
+			} else if err := navLeft(ctx); err != nil {
 				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
