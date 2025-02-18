@@ -1160,7 +1160,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 			if !morePhotosAvailable {
 				log.Info().Msg("no more photos available, we've reached the end of the timeline")
-				return nil
+				break
 			}
 
 			if err := navLeft(ctx); err != nil {
@@ -1173,7 +1173,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 }
 
 func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
-	for _, job := range *jobs {
+	for len(*jobs) > 0 {
+		job := (*jobs)[0]
+
 		if job.errChan == nil {
 			if err := markDone(s.dlDir, job.location); err != nil {
 				return err
@@ -1181,6 +1183,7 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 			*jobs = (*jobs)[1:]
 			continue
 		}
+
 		select {
 		case err := <-job.errChan:
 			if err != nil {
@@ -1200,7 +1203,6 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 			}
 		}
 	}
-
 	return nil
 }
 
