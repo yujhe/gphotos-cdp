@@ -73,6 +73,7 @@ var tick = 500 * time.Millisecond
 var errStillProcessing = errors.New("video is still processing & can be downloaded later")
 var errRetry = errors.New("retry")
 var errNoDownloadButton = errors.New("no download button found")
+var originalSuffix = "_original"
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
@@ -1058,7 +1059,7 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 			if isOriginal {
 				// to ensure the filename is not the same as the other download, change e.g. image_1.jpg to image_1_original.jpg
 				ext := filepath.Ext(filename)
-				filename = strings.TrimSuffix(filename, ext) + "_original" + ext
+				filename = strings.TrimSuffix(filename, ext) + originalSuffix + ext
 			}
 
 			newFile := filepath.Join(outDir, filename)
@@ -1340,35 +1341,75 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 		return err
 	}
 
-	if len(files) > 1 {
-		log.Debug().Msgf("can't check size because there is more than one file in download dir (probably from a zip file): %v", files)
-	} else if data.fileSize == 0 {
-		log.Debug().Msgf("can't check size because the parsed file size is 0: %v", files[0].Name())
+	var originalFile fs.FileInfo = nil
+	var liveFile fs.FileInfo = nil
+	if len(files) == 1 {
+		originalFile = files[0]
+	} else if len(files) > 1 {
+		log.Debug().Msgf("there are two files in this dir, checking for original or live photo: %s", strings.Join(fileNames(files), ", "))
+		for _, f := range files {
+			if strings.Contains(f.Name(), originalSuffix+".") {
+				log.Debug().Msgf("found original: %v", f.Name())
+				originalFile = f
+			}
+		}
+
+		if originalFile == nil {
+			for _, f := range files {
+				if strings.EqualFold(f.Name(), data.filename) {
+					log.Debug().Msgf("found probable live photo: %v", f.Name())
+					liveFile = f
+				}
+			}
+		}
+	}
+
+	if len(files) == 1 && files[0].Size() == 0 {
+		log.Debug().Msgf("Removing empty file %v and retrying download", files[0].Name())
+		if err := os.Remove(filepath.Join(s.dlDir, imageId, files[0].Name())); err != nil {
+			return err
+		}
+		return errRetry
+	}
+
+	if data.fileSize == 0 {
+		log.Debug().Msgf("can't check size because the we could not find an expected file size for file: %v", files[0].Name())
 	} else {
-		file := files[0]
-		if file.Size() == 0 {
-			log.Debug().Msgf("Removing empty file %v", file.Name())
-			if err := os.Remove(filepath.Join(s.dlDir, imageId, file.Name())); err != nil {
-				return err
-			}
-			return errRetry
-		}
-
-		hasOriginal := false
-		if file.Name() != data.filename {
-			// No handling for this case yet, just log it
-			if strings.TrimSuffix(file.Name(), filepath.Ext(file.Name())) == strings.TrimSuffix(data.filename, filepath.Ext(data.filename)) {
-				// It looks like this is a file that was edited in gphotos and not the original (in which case only the extension is different)
-				hasOriginal = true
-				log.Info().Msgf("Filename mismatch for %s : %v != %v (likely due to downloading altered version of photo instead of original)", imageId, file.Name(), data.filename)
-			} else {
-				log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, file.Name(), data.filename)
+		var fileOnDiskSize int64 = 0
+		if originalFile != nil {
+			fileOnDiskSize = originalFile.Size()
+		} else if liveFile != nil {
+			for _, f := range files {
+				fileOnDiskSize += f.Size()
 			}
 		}
 
-		if !hasOriginal && math.Abs(1-float64(data.fileSize)/float64(file.Size())) > 0.15 {
+		if fileOnDiskSize == 0 {
+			log.Warn().Msgf("can't compare size of unexpected local files: %s", strings.Join(fileNames(files), ", "))
+		} else {
+			if math.Abs(1-float64(data.fileSize)/float64(fileOnDiskSize)) > 0.15 {
+				// No handling for this case yet, just log it
+				log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, data.filename, data.fileSize, fileOnDiskSize)
+			}
+		}
+	}
+
+	var localFilename, processedLocalFilename string
+	if originalFile != nil {
+		localFilename = originalFile.Name()
+		processedLocalFilename = strings.Replace(originalFile.Name(), originalSuffix+".", ".", 1)
+	} else if liveFile != nil {
+		localFilename = liveFile.Name()
+		processedLocalFilename = liveFile.Name()
+	}
+
+	if processedLocalFilename == "" {
+		log.Warn().Msgf("can't compare filename of unexpected local files: %s", strings.Join(fileNames(files), ", "))
+	} else {
+		if !strings.EqualFold(processedLocalFilename, data.filename) {
 			// No handling for this case yet, just log it
-			log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, file.Name(), data.fileSize, file.Size())
+			log.Warn().Msgf("Filename mismatch for %s : %v != %v", imageId, localFilename, data.filename)
+
 		}
 	}
 
@@ -1449,4 +1490,12 @@ func (s *Session) startDlListener(ctx context.Context) {
 			}
 		}
 	})
+}
+
+func fileNames(files []fs.FileInfo) []string {
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.Name()
+	}
+	return names
 }
