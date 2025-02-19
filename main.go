@@ -42,6 +42,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -71,6 +72,7 @@ var (
 var tick = 500 * time.Millisecond
 var errStillProcessing = errors.New("video is still processing & can be downloaded later")
 var errRetry = errors.New("retry")
+var errNoDownloadButton = errors.New("no download button found")
 
 func main() {
 	zerolog.TimestampFieldName = "dt"
@@ -681,18 +683,73 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
-func requestDownload2(ctx context.Context) error {
+func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) error {
+	originalSelector := `[aria-label="Download original"]`
+	var selector string
+	if original {
+		selector = originalSelector
+	} else {
+		selector = `[aria-label="Download - Shift+D"]`
+	}
+
 	muKbEvents.Lock()
 	defer muKbEvents.Unlock()
-	log.Trace().Msg("Requesting download (alternative method)")
+	log.Trace().Msg("Requesting download (method 2)")
+
 	if err := chromedp.Run(ctx,
+		// Open more options dialog and go to download button
 		chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
 		chromedp.Sleep(50*time.Millisecond),
-		chromedp.Click(`[aria-label^="Download"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
+
+		// Check if there is an original version of the image that can also be downloaded
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if hasOriginal != nil {
+				var dlOriginalNodes []*cdp.Node
+				if err := chromedp.Nodes(originalSelector, &dlOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
+					return err
+				}
+				*hasOriginal = len(dlOriginalNodes) > 0
+			}
+			return nil
+		}),
+
+		// Press down arrow until the right menu option is selected
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var nodes []*cdp.Node
+			if err := chromedp.Nodes(selector, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+				return err
+			}
+			if len(nodes) == 0 {
+				return errNoDownloadButton
+			} else {
+				n := 0
+				for {
+					n++
+					if n > 30 {
+						return errors.New("was not able to select the download button")
+					}
+					var style []*css.ComputedStyleProperty
+					if err := chromedp.ComputedStyle(selector, &style).Do(ctx); err != nil {
+						return err
+					}
+
+					for _, s := range style {
+						if s.Name == "background-color" && !strings.Contains(s.Value, "0, 0, 0") {
+							return nil
+						}
+					}
+					chromedp.KeyEventNode(nodes[0], kb.ArrowDown).Do(ctx)
+				}
+			}
+		}),
+
+		// Activate the selected action and wait a bit before continuing
+		chromedp.KeyEvent(kb.Enter),
 		chromedp.Sleep(400*time.Millisecond),
 	); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -838,7 +895,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 // download starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s *Session) download(ctx context.Context, location string) (NewDownload, chan bool, error) {
+func (s *Session) download(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (NewDownload, chan bool, error) {
 	if len(s.nextDl) != 0 {
 		return NewDownload{}, nil, errors.New("unexpected: nextDl channel is not empty")
 	}
@@ -847,7 +904,7 @@ func (s *Session) download(ctx context.Context, location string) (NewDownload, c
 	dlProgress := make(chan bool, 1)
 	s.nextDl <- DownloadChannels{dlStarted, dlProgress}
 
-	if err := requestDownload1(ctx); err != nil {
+	if err := requestDownload2(ctx, dlOriginal, hasOriginal); err != nil {
 		return NewDownload{}, nil, err
 	}
 
@@ -893,7 +950,7 @@ func (s *Session) download(ctx context.Context, location string) (NewDownload, c
 
 		select {
 		case <-timeout1.C:
-			if err := requestDownload2(ctx); err != nil {
+			if err := requestDownload1(ctx); err != nil {
 				return NewDownload{}, nil, err
 			}
 		case <-timeout2.C:
@@ -944,9 +1001,10 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
 func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
+	hasOriginal := false
 	var data PhotoData
-	errChan := make(chan error, 1)
-	dl, dlProgress, err := s.download(ctx, location)
+	outerErrChan := make(chan error, 1)
+	dl1, dlProgress1, err := s.download(ctx, location, false, &hasOriginal)
 	if err == nil {
 		data, err = s.getPhotoData(ctx)
 	}
@@ -954,18 +1012,18 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 		if err != errStillProcessing {
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 		}
-		errChan <- err
-		return errChan
+		outerErrChan <- err
+		return outerErrChan
 	}
 
-	go func() {
+	dlHandler := func(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool) {
 		dlTimeout := time.NewTimer(time.Minute)
-	dl:
+	progressLoop:
 		for {
 			select {
 			case p := <-dlProgress:
 				if p {
-					break dl
+					break progressLoop
 				} else {
 					dlTimeout.Reset(time.Minute)
 				}
@@ -996,6 +1054,13 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 			} else {
 				filename = data.filename
 			}
+
+			if isOriginal {
+				// to ensure the filename is not the same as the other download, change e.g. image_1.jpg to image_1_original.jpg
+				ext := filepath.Ext(filename)
+				filename = strings.TrimSuffix(filename, ext) + "_original" + ext
+			}
+
 			newFile := filepath.Join(outDir, filename)
 			log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
 			if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
@@ -1018,9 +1083,46 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 		}
 
 		errChan <- nil
+	}
+
+	jobs := [](chan error){}
+	errChan1 := make(chan error, 1)
+	go dlHandler(dl1, dlProgress1, errChan1, false)
+	jobs = append(jobs, errChan1)
+
+	if hasOriginal {
+		dl2, dlProgress2, err := s.download(ctx, location, true, nil)
+		if err != nil {
+			outerErrChan <- err
+			return outerErrChan
+		}
+
+		errChan2 := make(chan error, 1)
+		go dlHandler(dl2, dlProgress2, errChan2, true)
+		jobs = append(jobs, errChan2)
+	}
+
+	go func() {
+		for i, job := range jobs {
+			select {
+			case err := <-job:
+				if err != nil {
+					outerErrChan <- err
+					return
+				} else {
+					jobs = append(jobs[:i], jobs[i+1:]...)
+				}
+			default:
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(jobs) == 0 {
+				break
+			}
+		}
+		outerErrChan <- nil
 	}()
 
-	return errChan
+	return outerErrChan
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -1111,8 +1213,10 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			entries, err := os.ReadDir(filepath.Join(s.dlDir, imageId))
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
 			}
 
 			var newJob chan error = nil
