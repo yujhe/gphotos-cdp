@@ -1102,25 +1102,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 				break
 			}
 
-			var morePhotosAvailable bool
-			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
-				return fmt.Errorf("error checking for nav left button: %v", err)
-			}
-			if !morePhotosAvailable {
-				log.Debug().Str("location", location).Msg("no left button visible, but trying nav left anyway because sometimes it doesn't become visible immediately")
-				oldLocation := location
-				navLeft(ctx)
-				if err := chromedp.Location(&location).Do(ctx); err != nil {
-					return err
-				}
-				if location == oldLocation {
-					log.Info().Msgf("no more photos available, we've reached the end of the timeline at %s", location)
-					break
-				}
-			} else if err := navLeft(ctx); err != nil {
-				return fmt.Errorf("error at %v: %v", location, err)
-			}
-
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
@@ -1170,6 +1151,25 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 
 			asyncJobs = append(asyncJobs, Job{location, newJob})
+
+			var morePhotosAvailable bool
+			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
+				return fmt.Errorf("error checking for nav left button: %v", err)
+			}
+			if !morePhotosAvailable {
+				log.Debug().Str("location", location).Msg("no left button visible, but trying nav left anyway because sometimes it doesn't become visible immediately")
+				oldLocation := location
+				navLeft(ctx)
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if location == oldLocation {
+					log.Info().Msgf("no more photos available, we've reached the end of the timeline at %s", location)
+					break
+				}
+			} else if err := navLeft(ctx); err != nil {
+				return fmt.Errorf("error at %v: %v", location, err)
+			}
 
 			for {
 				if err := s.processJobs(&asyncJobs, false); err != nil {
