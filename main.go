@@ -1253,7 +1253,8 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 		hasOriginal := false
 		if file.Name() != data.filename {
 			// No handling for this case yet, just log it
-			if filepath.Base(file.Name()) == filepath.Base(data.filename) {
+			if strings.TrimSuffix(file.Name(), filepath.Ext(file.Name())) == strings.TrimSuffix(data.filename, filepath.Ext(data.filename)) {
+				// It looks like this is a file that was edited in gphotos and not the original (in which case only the extension is different)
 				hasOriginal = true
 				log.Info().Msgf("Filename mismatch for %s : %v != %v (likely due to downloading altered version of photo instead of original)", imageId, file.Name(), data.filename)
 			} else {
