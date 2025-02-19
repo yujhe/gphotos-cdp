@@ -138,6 +138,14 @@ func main() {
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var location string
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
+				return err
+			}
+			log.Debug().Msgf("Location: %v", location)
+			return nil
+		}),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
 		log.Fatal().Msg(err.Error())
@@ -415,6 +423,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		}
 		if resp.Status == http.StatusOK {
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			log.Debug().Msg("Successfully navigated back to last done item")
 			return nil
 		}
 		lastDoneFile := filepath.Join(s.dlDir, *lastDoneFlag)
@@ -599,6 +608,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
+	log.Debug().Msg("Navigating left")
 	return navWithAction(ctx, chromedp.KeyEvent(kb.ArrowLeft))
 }
 
@@ -852,7 +862,7 @@ func (s *Session) download(ctx context.Context, location string) (NewDownload, c
 			return NewDownload{}, nil, err
 		}
 		if len(nodes) > 0 {
-			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			log.Warn().Msg("Received 'Video is still processing' error")
 			select {
 			case <-s.nextDl:
 			default:
@@ -872,11 +882,12 @@ func (s *Session) download(ctx context.Context, location string) (NewDownload, c
 			return NewDownload{}, nil, err
 		}
 		if res {
-			log.Warn().Msg("Received 'Video is still processing error', skipping for now")
+			log.Warn().Msg("Received 'Video is still processing' error")
 			select {
 			case <-s.nextDl:
 			default:
 			}
+			time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
 			return NewDownload{}, nil, errStillProcessing
 		}
 
@@ -940,7 +951,9 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 		data, err = s.getPhotoData(ctx)
 	}
 	if err != nil {
-		dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+		if err != errStillProcessing {
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+		}
 		errChan <- err
 		return errChan
 	}
@@ -1078,8 +1091,36 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 		var asyncJobs []Job
 
+		var location string
+		if err := chromedp.Location(&location).Do(ctx); err != nil {
+			return err
+		}
+
 		for {
-			var location string
+			n++
+			if N > 0 && n > N {
+				break
+			}
+
+			var morePhotosAvailable bool
+			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
+				return fmt.Errorf("error checking for nav left button: %v", err)
+			}
+			if !morePhotosAvailable {
+				log.Debug().Str("location", location).Msg("no left button visible, but trying nav left anyway because sometimes it doesn't become visible immediately")
+				oldLocation := location
+				navLeft(ctx)
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if location == oldLocation {
+					log.Info().Msgf("no more photos available, we've reached the end of the timeline at %s", location)
+					break
+				}
+			} else if err := navLeft(ctx); err != nil {
+				return fmt.Errorf("error at %v: %v", location, err)
+			}
+
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
@@ -1093,22 +1134,16 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 
-			var job chan error = nil
+			var newJob chan error = nil
 			if len(entries) == 0 {
 				// Local dir doesn't exist or is empty, continue downloading
-				job = s.dlAndProcess(ctx, location)
+				newJob = s.dlAndProcess(ctx, location)
 				select {
-				case err := <-job:
+				case err := <-newJob:
+					newJob = nil
 					if err == errStillProcessing {
-						log.Warn().Msg("Video is still processing & can be downloaded later, skipping for now")
-						// write location to file to be downloaded later (append to .skipped)
-						f, err := os.OpenFile(filepath.Join(s.dlDir, ".skipped"), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-						if err != nil {
-							return err
-						}
-						if _, err := f.WriteString(location + "\n"); err != nil {
-							return err
-						}
+						// Old highlight videos are no longer available
+						log.Info().Msg("Skipping generated highlight video that Google seems to have lost")
 					} else if err != nil {
 						return err
 					}
@@ -1134,12 +1169,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
 
-			asyncJobs = append(asyncJobs, Job{location, job})
-
-			n++
-			if N > 0 && n >= N {
-				break
-			}
+			asyncJobs = append(asyncJobs, Job{location, newJob})
 
 			for {
 				if err := s.processJobs(&asyncJobs, false); err != nil {
@@ -1159,25 +1189,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				// Let's wait for some downloads to finish
 				time.Sleep(50 * time.Millisecond)
-			}
-
-			var morePhotosAvailable bool
-			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
-				return fmt.Errorf("error checking for previous photo: %v", err)
-			}
-			if !morePhotosAvailable {
-				log.Debug().Msg("no left button visible, but trying nav left anyway to avoid false positives")
-				oldLocation := location
-				navLeft(ctx)
-				if err := chromedp.Location(&location).Do(ctx); err != nil {
-					return err
-				}
-				if location == oldLocation {
-					log.Info().Msg("no more photos available, we've reached the end of the timeline")
-					break
-				}
-			} else if err := navLeft(ctx); err != nil {
-				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
 
