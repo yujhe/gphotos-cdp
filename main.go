@@ -941,11 +941,11 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 		}
 		// Sometimes Google returns a different error, check for that too
 		if !res {
-			if err := chromedp.Evaluate(`document.body.innerText.indexOf('This video-downloads.googleusercontent.com page can’t be found') != -1`, &res).Do(ctx); err != nil {
+			if err := chromedp.Evaluate("document.body.innerText.indexOf('This video-downloads.googleusercontent.com page can') != -1", &res).Do(ctx); err != nil {
 				return NewDownload{}, nil, err
 			}
 			if res {
-				log.Info().Msgf("At error page, we will now navigate back to the photo in order to continue: %s", location)
+				log.Info().Msgf("This is an error page, we will navigate back to the photo to be able to continue: %s", location)
 				if err := navWithAction(ctx, chromedp.Navigate(location)); err != nil {
 					return NewDownload{}, nil, err
 				}
