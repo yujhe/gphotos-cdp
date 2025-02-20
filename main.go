@@ -945,8 +945,8 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 				return NewDownload{}, nil, err
 			}
 			if res {
-				// We need to navigate back to the picture in order to continue
-				if err := chromedp.Navigate(location).Do(ctx); err != nil {
+				log.Info().Msgf("At error page, we will now navigate back to the photo in order to continue: %s", location)
+				if err := navWithAction(ctx, chromedp.Navigate(location)); err != nil {
 					return NewDownload{}, nil, err
 				}
 				time.Sleep(400 * time.Millisecond)
