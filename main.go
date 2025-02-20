@@ -944,6 +944,13 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 			if err := chromedp.Evaluate(`document.body.innerText.indexOf('This video-downloads.googleusercontent.com page can’t be found') != -1`, &res).Do(ctx); err != nil {
 				return NewDownload{}, nil, err
 			}
+			if res {
+				// We need to navigate back to the picture in order to continue
+				if err := chromedp.Navigate(location).Do(ctx); err != nil {
+					return NewDownload{}, nil, err
+				}
+				time.Sleep(400 * time.Millisecond)
+			}
 		}
 		if res {
 			log.Warn().Msg("Received 'Video is still processing' error")
