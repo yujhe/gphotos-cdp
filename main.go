@@ -1264,7 +1264,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			asyncJobs = append(asyncJobs, Job{location, newJob})
 
 			var morePhotosAvailable bool
-			if err := chromedp.Evaluate(`window.getComputedStyle([...document.querySelectorAll('[aria-label="View previous photo"]')].pop()).display !== 'none'`, &morePhotosAvailable).Do(ctx); err != nil {
+			if err := chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="View previous photo"]')].slice(-1).map(x => window.getComputedStyle(x).display !== 'none')[0]`, &morePhotosAvailable).Do(ctx); err != nil {
 				return fmt.Errorf("error checking for nav left button: %v", err)
 			}
 			if !morePhotosAvailable {
