@@ -642,7 +642,7 @@ func markDone(dldir, location string) error {
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownload1(ctx context.Context) error {
-	log.Trace().Msg("Requesting download")
+	log.Debug().Msg("Requesting download (method 1)")
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
 		return err
 	}
@@ -685,6 +685,7 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
 func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) error {
+	log.Debug().Msg("Requesting download (method 2)")
 	originalSelector := `[aria-label="Download original"]`
 	var selector string
 	if original {
@@ -695,7 +696,6 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 
 	muKbEvents.Lock()
 	defer muKbEvents.Unlock()
-	log.Trace().Msg("Requesting download (method 2)")
 
 	if err := chromedp.Run(ctx,
 		// Open more options dialog and go to download button
@@ -938,6 +938,12 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 		var res bool
 		if err := chromedp.Evaluate("document.body.innerHTML.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
 			return NewDownload{}, nil, err
+		}
+		// Sometimes Google returns a different error, check for that too
+		if !res {
+			if err := chromedp.Evaluate(`document.body.innerText.indexOf('This video-downloads.googleusercontent.com page can’t be found') != -1`, &res).Do(ctx); err != nil {
+				return NewDownload{}, nil, err
+			}
 		}
 		if res {
 			log.Warn().Msg("Received 'Video is still processing' error")
