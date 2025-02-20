@@ -936,12 +936,12 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 
 		// This check only works for requestDownload1 method (not requestDownload2)
 		var res bool
-		if err := chromedp.Evaluate("document.body.innerHTML.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
+		if err := chromedp.Evaluate("document.body.textContent.indexOf('Video is still processing &amp; can be downloaded later') != -1", &res).Do(ctx); err != nil {
 			return NewDownload{}, nil, err
 		}
 		// Sometimes Google returns a different error, check for that too
 		if !res {
-			if err := chromedp.Evaluate("document.body.innerText.indexOf('This video-downloads.googleusercontent.com page can') != -1", &res).Do(ctx); err != nil {
+			if err := chromedp.Evaluate("document.body.textContent.indexOf('No webpage was found for the web address:') != -1", &res).Do(ctx); err != nil {
 				return NewDownload{}, nil, err
 			}
 			if res {
@@ -1287,6 +1287,20 @@ func (s *Session) navN(N int) func(context.Context) error {
 				}
 			} else if err := navLeft(ctx); err != nil {
 				return fmt.Errorf("error at %v: %v", location, err)
+			}
+
+			for {
+				var res bool
+				if err := chromedp.Evaluate("document.body.textContent.indexOf('Your highlight video will be ready soon') != -1", &res).Do(ctx); err != nil {
+					return fmt.Errorf("error checking for video processing: %v", err)
+				}
+				if res {
+					if err := navLeft(ctx); err != nil {
+						return fmt.Errorf("error at %v: %v", location, err)
+					}
+				} else {
+					break
+				}
 			}
 
 			for {
