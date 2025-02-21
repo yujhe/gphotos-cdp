@@ -153,7 +153,8 @@ func main() {
 	); err != nil {
 		log.Fatal().Msg(err.Error())
 	}
-	fmt.Println("OK")
+
+	log.Info().Msg("Done")
 }
 
 type PhotoData struct {
@@ -248,6 +249,8 @@ func NewSession() (*Session, error) {
 }
 
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
+	log.Info().Msgf("Starting Chrome browser")
+
 	// Let's use as a base for allocator options (It implies Headless)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.DisableGPU,
@@ -299,12 +302,12 @@ func (s *Session) cleanDlDir() error {
 // login navigates to https://photos.google.com/ and waits for the user to have
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
+	log.Info().Msg("Starting authentication...")
+	ctx, cancel := context.WithTimeoutCause(ctx, 4*time.Minute, errors.New("login timed out"))
+	defer cancel()
+
 	return chromedp.Run(ctx,
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.dlDirTmp).WithEventsEnabled(true),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Debug().Msg("pre-navigate")
-			return nil
-		}),
 		chromedp.Navigate("https://photos.google.com/"),
 		// when we're not authenticated, the URL is actually
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
@@ -332,13 +335,16 @@ func (s *Session) login(ctx context.Context) error {
 			}
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Debug().Msg("post-navigate")
+			log.Info().Msg("Successfully authenticated")
 			return nil
 		}),
 	)
 }
 
 func (s *Session) checkLocale(ctx context.Context) error {
+	ctx, cancel := context.WithTimeoutCause(ctx, 20*time.Second, errors.New("check locale timed out"))
+	defer cancel()
+
 	var locale string
 
 	err := chromedp.Run(ctx,
@@ -399,7 +405,7 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeoutCause(ctx, 2*time.Minute, errors.New("firstNav timed out"))
 	defer cancel()
 
 	// This is only used to ensure page is loaded
@@ -426,7 +432,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		}
 		if resp.Status == http.StatusOK {
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			log.Debug().Msg("Successfully navigated back to last done item")
+			log.Info().Msgf("Successfully navigated back to last done item: %s", s.lastDone)
 			return nil
 		}
 		lastDoneFile := filepath.Join(s.dlDir, *lastDoneFlag)
