@@ -303,7 +303,7 @@ func (s *Session) cleanDlDir() error {
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	log.Info().Msg("Starting authentication...")
-	ctx, cancel := context.WithTimeoutCause(ctx, 4*time.Minute, errors.New("login timed out"))
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
 	return chromedp.Run(ctx,
@@ -342,7 +342,7 @@ func (s *Session) login(ctx context.Context) error {
 }
 
 func (s *Session) checkLocale(ctx context.Context) error {
-	ctx, cancel := context.WithTimeoutCause(ctx, 20*time.Second, errors.New("check locale timed out"))
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	var locale string
@@ -405,7 +405,7 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	ctx, cancel := context.WithTimeoutCause(ctx, 2*time.Minute, errors.New("firstNav timed out"))
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	// This is only used to ensure page is loaded
