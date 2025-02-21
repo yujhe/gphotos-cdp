@@ -303,9 +303,6 @@ func (s *Session) cleanDlDir() error {
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	log.Info().Msg("Starting authentication...")
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-	defer cancel()
-
 	return chromedp.Run(ctx,
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.dlDirTmp).WithEventsEnabled(true),
 		chromedp.Navigate("https://photos.google.com/"),
@@ -342,9 +339,6 @@ func (s *Session) login(ctx context.Context) error {
 }
 
 func (s *Session) checkLocale(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
 	var locale string
 
 	err := chromedp.Run(ctx,
@@ -405,9 +399,6 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
 	// This is only used to ensure page is loaded
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
@@ -509,9 +500,6 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 func (s *Session) navToEnd(ctx context.Context) error {
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
 	var previousScr, scr []byte
 	for {
 		if err := chromedp.Run(ctx,
@@ -781,7 +769,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 		var infoVisible bool = false
 		func() {
-			ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
 			chromedp.WaitVisible(`[aria-label="Close info"]`, chromedp.ByQuery, chromedp.AtLeast(2)).Do(ctx)
 			infoVisible = true
