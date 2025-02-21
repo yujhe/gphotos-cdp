@@ -769,7 +769,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 		var infoVisible bool = false
 		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 			defer cancel()
 			chromedp.WaitVisible(`[aria-label="Close info"]`, chromedp.ByQuery, chromedp.AtLeast(2)).Do(ctx)
 			infoVisible = true
