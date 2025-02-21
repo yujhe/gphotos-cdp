@@ -852,7 +852,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			break
 		}
 
-		log.Info().Msg("Date not visible, clicking on i button")
+		log.Debug().Msg("Date not visible, clicking on i button")
 		if err := func() error {
 			muKbEvents.Lock()
 			defer muKbEvents.Unlock()
@@ -1327,6 +1327,10 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 				// Let's wait for some downloads to finish
 				time.Sleep(50 * time.Millisecond)
+			}
+
+			if n%50 == 0 {
+				log.Info().Msgf("Started %d jobs, waiting for %d jobs to finish", n, len(asyncJobs))
 			}
 		}
 
