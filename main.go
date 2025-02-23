@@ -1361,20 +1361,28 @@ func (s *Session) resync() func(context.Context) error {
 				return err
 			}
 			if len(sliderNodes) > 0 {
-				pos, exists := sliderNodes[0].Attribute("aria-valuenow")
+				posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
 				if exists {
-					sliderPos, _ = strconv.ParseFloat(pos, 64)
+					pos, err := strconv.ParseFloat(posStr, 64)
+					if err == nil {
+						sliderPos = pos
+					}
 				}
+			}
+			if retries == 0 {
+				log.Trace().Msgf("Slider position: %v", sliderPos)
 			}
 
 			// scroll to the last one by focusing the last node
 			if lastNode == nodes[len(nodes)-1] {
-				if retries > 100 || (retries > 10 && sliderPos > 0.98) || (retries > 2 && sliderPos > 0.995) {
+				if retries > 480 || (retries > 40 && sliderPos > 0.98) || (retries > 4 && sliderPos > 0.995) {
 					break
 				}
 				time.Sleep(250 * time.Millisecond)
 				retries++
 				continue
+			} else {
+				retries = 0
 			}
 			for i, node := range nodes {
 				if node == lastNode {
@@ -1386,7 +1394,6 @@ func (s *Session) resync() func(context.Context) error {
 			if err := dom.Focus().WithNodeID(lastNode.NodeID).Do(ctx); err != nil {
 				return err
 			}
-			retries = 0
 
 			n = n + len(nodes)
 
@@ -1427,13 +1434,18 @@ func (s *Session) resync() func(context.Context) error {
 			return err
 		}
 
+		deletedCnt := 0
 		for _, entry := range entries {
 			if entry.IsDir() && entry.Name() != "tmp" {
 				// Check if the folder name is in the list of photo IDs
 				if !contains(photoIds, entry.Name()) {
-					log.Info().Msgf("Found local photo %v that does not exist in gphotos. It may have been deleted", entry.Name())
+					deletedCnt++
+					// log.Info().Msgf("Found local photo %v that does not exist in gphotos. It may have been deleted", entry.Name())
 				}
 			}
+		}
+		if deletedCnt > 0 {
+			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos", deletedCnt)
 		}
 
 		return s.processJobs(&asyncJobs, 0, false)
