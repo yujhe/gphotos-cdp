@@ -1370,7 +1370,7 @@ func (s *Session) resync() func(context.Context) error {
 				}
 			}
 			if retries == 0 {
-				log.Trace().Msgf("Slider position: %v", sliderPos)
+				log.Debug().Msgf("Slider position: %v", sliderPos)
 			}
 
 			// scroll to the last one by focusing the last node
