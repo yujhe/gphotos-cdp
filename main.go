@@ -1353,12 +1353,26 @@ func (s *Session) resync() func(context.Context) error {
 				break
 			}
 
+			sliderPos := 0.0
+			var sliderNodes []*cdp.Node
+			if err := chromedp.Run(ctx,
+				chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+			); err != nil {
+				return err
+			}
+			if len(sliderNodes) > 0 {
+				pos, exists := sliderNodes[0].Attribute("aria-valuenow")
+				if exists {
+					sliderPos, _ = strconv.ParseFloat(pos, 64)
+				}
+			}
+
 			// scroll to the last one by focusing the last node
 			if lastNode == nodes[len(nodes)-1] {
-				if retries > 20 {
+				if retries > 100 || (retries > 10 && sliderPos > 0.98) || (retries > 2 && sliderPos > 0.995) {
 					break
 				}
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(250 * time.Millisecond)
 				retries++
 				continue
 			}
@@ -1575,7 +1589,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			if n%500 == 0 && doMarkDone {
 				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
 			}
-			if dlCount <= maxJobs && maxJobs > 0 {
+			if dlCount <= maxJobs && (maxJobs > 0 || !doMarkDone) {
 				return nil
 			}
 			// Let's wait for some downloads to finish before starting more
