@@ -711,13 +711,8 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 	for i := 0; i < 10; i++ {
 		muTabActivity.Lock()
 		c := chromedp.FromContext(ctx)
-		if err := chromedp.Run(ctx,
-			target.ActivateTarget(c.Target.TargetID),
-		); err != nil {
-			log.Printf("ActivateTarget: %v", err)
-		}
+		target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
-		page.BringToFront().Do(ctx)
 		if err := chromedp.Run(ctx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
@@ -820,15 +815,8 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 	var n = 0
 	for {
-		if err := page.BringToFront().Do(ctx); err != nil {
-			return PhotoData{}, err
-		}
 		c := chromedp.FromContext(ctx)
-		if err := chromedp.Run(ctx,
-			target.ActivateTarget(c.Target.TargetID),
-		); err != nil {
-			log.Printf("ActivateTarget: %v", err)
-		}
+		target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
 		n++
 		var filesizeStr string
@@ -1382,7 +1370,8 @@ func (s *Session) resync() func(context.Context) error {
 				}
 
 				if retries%50 == 0 {
-					page.BringToFront().Do(ctx)
+					c := chromedp.FromContext(ctx)
+					target.ActivateTarget(c.Target.TargetID).Do(ctx)
 					chromedp.KeyEvent(kb.PageDown).Do(ctx)
 				}
 
