@@ -655,9 +655,8 @@ func markDone(dldir, location string) error {
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownload1(ctx context.Context) error {
-	cl := GetContextLocks(ctx)
-	cl.muKbEvents.Lock()
-	defer cl.muKbEvents.Unlock()
+	muTabActivity.Lock()
+	defer muTabActivity.Unlock()
 
 	log.Debug().Msg("Requesting download (method 1)")
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
@@ -700,8 +699,6 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
 func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) error {
-	cl := GetContextLocks(ctx)
-
 	log.Debug().Str("original", fmt.Sprintf("%v", original)).Msg("Requesting download (method 2)")
 	originalSelector := `[aria-label="Download original"]`
 	var selector string
@@ -712,44 +709,36 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 	}
 
 	for i := 0; i < 10; i++ {
-		cl.muKbEvents.Lock()
+		muTabActivity.Lock()
 		c := chromedp.FromContext(ctx)
 		if err := chromedp.Run(ctx,
 			target.ActivateTarget(c.Target.TargetID),
 		); err != nil {
 			log.Printf("ActivateTarget: %v", err)
 		}
-		if err := chromedp.Run(ctx,
-			page.BringToFront(),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				// Wait for more options menu to appear
-				for i := 0; i < 10; i++ {
-					var nodes []*cdp.Node
-					if err := chromedp.Nodes(`[aria-label="More options"]`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
-						return err
-					}
-					if len(nodes) > 0 {
-						return nil
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-				return errors.New("more options menu not visible")
-			}),
-			// Open more options dialog and go to download button
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
-			chromedp.Sleep(50*time.Millisecond),
 
+		page.BringToFront().Do(ctx)
+		if err := chromedp.Run(ctx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
-				for i := 0; i < 10; i++ {
-					var nodes []*cdp.Node
-					if err := chromedp.Nodes(selector, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
-						return err
-					}
-					if len(nodes) > 0 {
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
+				var nodesTmp []*cdp.Node
+				err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond)
+				if err == context.DeadlineExceeded {
+					return errors.New("more options button not visible")
+				}
+				return err
+			}),
+
+			// Open more options dialog
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
+			// chromedp.Sleep(50*time.Millisecond),
+
+			// Go to download button
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				// Wait for download button to appear
+				var nodesTmp []*cdp.Node
+				if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 100*time.Millisecond); err != nil && err != context.DeadlineExceeded {
+					return err
 				}
 
 				// Check if there is an original version of the image that can also be downloaded
@@ -797,30 +786,28 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			// Activate the selected action and wait a bit before continuing
 			chromedp.KeyEvent(kb.Enter),
 		); err != nil {
-			cl.muKbEvents.Unlock()
+			muTabActivity.Unlock()
 			if err == errNoDownloadButton {
 				time.Sleep(20 * time.Millisecond)
 				continue
 			}
 			return err
 		}
-		cl.muKbEvents.Unlock()
+
+		muTabActivity.Unlock()
 		break
 	}
 
 	return nil
 }
 
-var photoDataMutex sync.Mutex = sync.Mutex{}
-
 // getPhotoData gets the date from the currently viewed item.
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
 func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
-	cl := GetContextLocks(ctx)
-	cl.muKbEvents.Lock()
-	defer cl.muKbEvents.Unlock()
+	muTabActivity.Lock()
+	defer muTabActivity.Unlock()
 
 	var filename string
 	var filesize int64 = 0
@@ -846,24 +833,14 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 		n++
 		var filesizeStr string
 
-		var infoVisible bool = false
-		func() {
-			ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-			defer cancel()
-			chromedp.WaitVisible(`[aria-label="Close info"]`, chromedp.ByQuery, chromedp.AtLeast(2)).Do(ctx)
-			infoVisible = true
-		}()
-
-		if infoVisible {
-			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
-			); err != nil {
-				return PhotoData{}, err
-			}
+		if err := chromedp.Run(ctx,
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
+			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
+		); err != nil {
+			return PhotoData{}, err
 		}
 
 		if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
@@ -917,28 +894,24 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				tzStr = fmt.Sprintf("%+03d%02d", offset/3600, (offset%3600)/60)
 			}
 			break
-		}
+		} else {
+			log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
 
-		log.Debug().Msg("Date not visible, clicking on i button")
-		if err := func() error {
-			cl.muKbEvents.Lock()
-			defer cl.muKbEvents.Unlock()
-			return chromedp.Run(ctx,
-				chromedp.WaitVisible(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(1)),
-				chromedp.Click(`[aria-label="Open info"]`, chromedp.ByQuery, chromedp.AtLeast(0)),
-			)
-		}(); err != nil {
-			return PhotoData{}, err
-		}
-
-		select {
-		case <-timeout1.C:
-			if err := navWithAction(ctx, chromedp.Reload()); err != nil {
+			// Click on info button
+			log.Debug().Msg("Date not visible, clicking on i button")
+			if err := chromedp.Evaluate(`document.querySelector('[aria-label="Open info"]')?.click()`, nil).Do(ctx); err != nil {
 				return PhotoData{}, err
 			}
-		case <-timeout2.C:
-			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
-		case <-time.After(time.Duration(150+n*12) * time.Millisecond):
+
+			select {
+			case <-timeout1.C:
+				if err := navWithAction(ctx, chromedp.Reload()); err != nil {
+					return PhotoData{}, err
+				}
+			case <-timeout2.C:
+				return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
+			case <-time.After(time.Duration(150+n*12) * time.Millisecond):
+			}
 		}
 	}
 
@@ -1000,8 +973,9 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 		if isStillProcessing {
 			// Click the button to close the warning, otherwise it will block navigating to the next photo
 			cl.muKbEvents.Lock()
-			defer cl.muKbEvents.Unlock()
-			if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
+			err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
+			cl.muKbEvents.Unlock()
+			if err != nil {
 				return NewDownload{}, nil, err
 			}
 		} else {
@@ -1090,6 +1064,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // of the moved file.
 func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
 	outerErrChan := make(chan error, 1)
+	jobs := [](chan error){}
 
 	go func() {
 		ctx, cancel := chromedp.NewContext(ctx)
@@ -1112,19 +1087,17 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 		}
 		time.Sleep(50 * time.Millisecond)
 
-		hasOriginal := false
-		var data PhotoData
-		dl1, dlProgress1, err := s.download(ctx, location, false, &hasOriginal, nextDl)
-		if err != nil {
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-			outerErrChan <- err
-			return
-		}
-		data, err = s.getPhotoData(ctx)
-		if err != nil {
-			outerErrChan <- err
-			return
-		}
+		photoDataChan := make(chan PhotoData, 2)
+		go func() {
+			data, err := s.getPhotoData(ctx)
+			if err != nil {
+				outerErrChan <- err
+			} else {
+				// We may need two of these:
+				photoDataChan <- data
+				photoDataChan <- data
+			}
+		}()
 
 		dlHandler := func(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool) {
 			dlTimeout := time.NewTimer(time.Minute)
@@ -1142,6 +1115,8 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 					return
 				}
 			}
+
+			data := <-photoDataChan
 
 			outDir, err := s.makeOutDir(location)
 			if err != nil {
@@ -1195,21 +1170,35 @@ func (s *Session) dlAndProcess(ctx context.Context, location string) chan error 
 			errChan <- nil
 		}
 
-		jobs := [](chan error){}
 		errChan1 := make(chan error, 1)
-		go dlHandler(dl1, dlProgress1, errChan1, false)
 		jobs = append(jobs, errChan1)
+		hasOriginalChan := make(chan bool, 1)
 
-		if hasOriginal {
-			dl2, dlProgress2, err := s.download(ctx, location, true, nil, nextDl)
+		go func() {
+			hasOriginal := false
+			dl, dlProgress, err := s.download(ctx, location, false, &hasOriginal, nextDl)
 			if err != nil {
+				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 				outerErrChan <- err
-				return
+			} else {
+				hasOriginalChan <- hasOriginal
+				go dlHandler(dl, dlProgress, errChan1, false)
 			}
+		}()
 
+		if <-hasOriginalChan {
 			errChan2 := make(chan error, 1)
-			go dlHandler(dl2, dlProgress2, errChan2, true)
 			jobs = append(jobs, errChan2)
+
+			go func() {
+				dl, dlProgress, err := s.download(ctx, location, false, nil, nextDl)
+				if err != nil {
+					dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+					outerErrChan <- err
+				} else {
+					go dlHandler(dl, dlProgress, errChan2, false)
+				}
+			}()
 		}
 
 		go func() {
@@ -1255,6 +1244,8 @@ func (s *Session) handleZip(zipfile, outFolder string) ([]string, error) {
 	log.Debug().Msgf("Unzipped %v in %v", zipfile, time.Since(st))
 	return files, nil
 }
+
+var muTabActivity sync.Mutex = sync.Mutex{}
 
 type ContextLocks = struct {
 	muNavWaiting             sync.RWMutex
@@ -1338,7 +1329,9 @@ func (s *Session) resync() func(context.Context) error {
 		photoIds := []string{}
 		lastNode := &cdp.Node{}
 		n := 0
+		dlCnt := 0
 		retries := 0
+	resyncLoop:
 		for {
 			// find all currently visible photos
 			var nodes []*cdp.Node
@@ -1375,7 +1368,7 @@ func (s *Session) resync() func(context.Context) error {
 
 			// scroll to the last one by focusing the last node
 			if lastNode == nodes[len(nodes)-1] {
-				if retries > 480 || (retries > 40 && sliderPos > 0.98) || (retries > 4 && sliderPos > 0.995) {
+				if retries > 500 || (retries > 40 && sliderPos > 0.98) || (retries > 4 && sliderPos > 0.995) {
 					break
 				}
 				time.Sleep(250 * time.Millisecond)
@@ -1422,10 +1415,11 @@ func (s *Session) resync() func(context.Context) error {
 					if err := s.processJobs(&asyncJobs, 4, false); err != nil {
 						return err
 					}
+					dlCnt++
 				}
 			}
 
-			log.Info().Msgf("resynced %v photos", n)
+			log.Info().Msgf("resynced %v items, downloaded %v new items", n, dlCnt)
 		}
 
 		// Check if there are folders in the dl dir that were not seen in gphotos
@@ -1568,45 +1562,59 @@ func (s *Session) navN(N int) func(context.Context) error {
 }
 
 func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
-	n := 0
-	for len(*jobs) > 0 {
-		job := (*jobs)[0]
+	log.Trace().Msgf("Processing %d jobs", len(*jobs))
 
-		select {
-		case err := <-job.errChan:
-			log.Debug().Msgf("result of downloading %v: %v", job.location, err)
-			if err != nil {
+	n := 0
+	for {
+		dlCount := 0
+		for i := range *jobs {
+			select {
+			case err := <-(*jobs)[i].errChan:
+				(*jobs)[i].errChan = nil
 				if err == errStillProcessing {
 					// Old highlight videos are no longer available
 					log.Info().Msg("Skipping generated highlight video that Google seems to have lost")
-				} else {
+				} else if err != nil {
 					return err
 				}
+			case err := <-s.err:
+				return err
+			default:
 			}
-			if doMarkDone {
-				if err := markDone(s.dlDir, job.location); err != nil {
+
+			if (*jobs)[i].errChan != nil && len((*jobs)[i].errChan) == 0 {
+				dlCount++
+			}
+		}
+
+		if doMarkDone {
+			// Remove completed jobs from the front of the slice
+			for len(*jobs) > 0 && (*jobs)[0].errChan == nil {
+				if err := markDone(s.dlDir, (*jobs)[0].location); err != nil {
 					return err
 				}
 				*jobs = (*jobs)[1:]
 			}
-		case err := <-s.err:
-			return err
-		default:
-			dlCount := 0
-			for _, job := range *jobs {
-				if len(job.errChan) == 0 {
-					dlCount++
-				}
-			}
-			if n%500 == 0 && doMarkDone {
+
+			if n%100 == 0 {
 				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
 			}
-			if dlCount <= maxJobs && (maxJobs > 0 || !doMarkDone) {
-				return nil
+
+			if len(*jobs) <= maxJobs {
+				break
 			}
-			// Let's wait for some downloads to finish before starting more
-			time.Sleep(100 * time.Millisecond)
+		} else {
+			if n%100 == 0 {
+				log.Info().Msgf("%d jobs, %d still in progress", len(*jobs), dlCount)
+			}
+
+			if dlCount <= maxJobs {
+				break
+			}
 		}
+
+		// Let's wait for some downloads to finish before starting more
+		time.Sleep(100 * time.Millisecond)
 		n++
 	}
 	return nil
@@ -1721,6 +1729,15 @@ func (s *Session) doFileDateUpdate(_ context.Context, date time.Time, filePaths 
 		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.DateOnly))
 	}
 
+	return nil
+}
+
+func doQueryActionWithTimeout(ctx context.Context, action chromedp.Action, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := action.Do(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
