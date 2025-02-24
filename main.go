@@ -1363,7 +1363,6 @@ func (s *Session) resync() func(context.Context) error {
 				}
 			}
 			if retries == 0 {
-				log.Debug().Msgf("Slider position: %v", sliderPos)
 			}
 
 			// remove already processed nodes
@@ -1387,12 +1386,13 @@ func (s *Session) resync() func(context.Context) error {
 					chromedp.KeyEvent(kb.PageDown).Do(ctx)
 				}
 
-				if retries%500 == 0 {
-					log.Debug().Msgf("Retried getting new items: %d, sliderPos: %v", retries, sliderPos)
+				retries++
+
+				if retries%50 == 0 {
+					log.Debug().Msgf("Retried getting new items %d times at %0.2f%% done", retries, sliderPos*100)
 				}
 
 				time.Sleep(250 * time.Millisecond)
-				retries++
 				continue
 			} else {
 				retries = 0
@@ -1433,8 +1433,8 @@ func (s *Session) resync() func(context.Context) error {
 				}
 			}
 
-			if n-lastLogN >= 500 {
-				log.Info().Msgf("in total: resynced %v items, downloaded %v new items", n, dlCnt)
+			if n-lastLogN >= 1000 {
+				log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%%", n, dlCnt, sliderPos*100)
 				lastLogN = n
 			}
 		}
