@@ -1331,7 +1331,6 @@ func (s *Session) resync() func(context.Context) error {
 		n := 0
 		dlCnt := 0
 		retries := 0
-	resyncLoop:
 		for {
 			// find all currently visible photos
 			var nodes []*cdp.Node
