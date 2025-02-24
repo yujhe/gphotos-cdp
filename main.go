@@ -1631,6 +1631,10 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			}
 		}
 
+		if n > 50000 {
+			return errors.New("waited too long for jobs to exit, exiting")
+		}
+
 		// Let's wait for some downloads to finish before starting more
 		time.Sleep(100 * time.Millisecond)
 		n++
