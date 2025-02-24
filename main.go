@@ -930,6 +930,8 @@ var dlLock sync.Mutex = sync.Mutex{}
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
 func (s *Session) download(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool, nextDl chan DownloadChannels) (NewDownload, chan bool, error) {
+	log.Trace().Msgf("entering download() for %v, dlOriginal=%v", location, dlOriginal)
+
 	cl := GetContextLocks(ctx)
 
 	dlLock.Lock()
@@ -1076,9 +1078,9 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	log.Trace().Msgf("Getting photo data for %v", location)
 	photoDataChan := make(chan PhotoData, 2)
 	go func() {
+		log.Trace().Msgf("Getting photo data for %v", location)
 		data, err := s.getPhotoData(ctx)
 		if err != nil {
 			outerErrChan <- err
@@ -1169,6 +1171,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		hasOriginal := false
 		dl, dlProgress, err := s.download(ctx, location, false, &hasOriginal, nextDl)
 		if err != nil {
+			log.Trace().Msgf("download of %v failed: %v", location, err)
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 			outerErrChan <- err
 		} else {
@@ -1184,6 +1187,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		go func() {
 			dl, dlProgress, err := s.download(ctx, location, false, nil, nextDl)
 			if err != nil {
+				log.Trace().Msgf("download of %v failed: %v", location, err)
 				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 				outerErrChan <- err
 			} else {
