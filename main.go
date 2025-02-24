@@ -1411,7 +1411,7 @@ func (s *Session) resync() func(context.Context) error {
 					// context navigate to that photo and call dlAndProcess
 					location := "https://photos.google.com/photo/" + imageId
 					asyncJobs = append(asyncJobs, Job{location, s.dlAndProcess(ctx, location)})
-					if err := s.processJobs(&asyncJobs, 4, false); err != nil {
+					if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
 						return err
 					}
 					dlCnt++
@@ -1512,7 +1512,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 
 			asyncJobs = append(asyncJobs, Job{location, newJob})
 
-			if err := s.processJobs(&asyncJobs, *workersFlag, true); err != nil {
+			if err := s.processJobs(&asyncJobs, *workersFlag-1, true); err != nil {
 				return err
 			}
 
@@ -1581,7 +1581,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			default:
 			}
 
-			if (*jobs)[i].errChan != nil && len((*jobs)[i].errChan) == 0 {
+			if (*jobs)[i].errChan != nil {
 				dlCount++
 			}
 		}
@@ -1589,13 +1589,14 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 		if doMarkDone {
 			// Remove completed jobs from the front of the slice
 			for len(*jobs) > 0 && (*jobs)[0].errChan == nil {
+				// Only mark jobs done in order
 				if err := markDone(s.dlDir, (*jobs)[0].location); err != nil {
 					return err
 				}
 				*jobs = (*jobs)[1:]
 			}
 
-			if n%100 == 0 {
+			if n%500 == 0 {
 				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
 			}
 
@@ -1603,7 +1604,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 				break
 			}
 		} else {
-			if n%100 == 0 {
+			if n%500 == 0 {
 				log.Info().Msgf("%d jobs, %d still in progress", len(*jobs), dlCount)
 			}
 
