@@ -1365,29 +1365,39 @@ func (s *Session) resync() func(context.Context) error {
 				log.Debug().Msgf("Slider position: %v", sliderPos)
 			}
 
-			// scroll to the last one by focusing the last node
-			if lastNode == nodes[len(nodes)-1] {
-				if retries > 500 || (retries > 40 && sliderPos > 0.98) || (retries > 4 && sliderPos > 0.995) {
-					break
-				}
-				time.Sleep(250 * time.Millisecond)
-				retries++
-				continue
-			} else {
-				retries = 0
-			}
+			// remove already processed nodes
 			for i, node := range nodes {
 				if node == lastNode {
 					nodes = nodes[i+1:]
 					break
 				}
 			}
+
+			n = n + len(nodes)
+
+			if len(nodes) == 0 {
+				// New new nodes found, does it look like we are done?
+				if retries > 8 && sliderPos > math.Max(0.95, float64(1-(50/n))) {
+					break
+				}
+
+				if retries%40 == 0 {
+					log.Debug().Msgf("Retries: %d, sliderPos: %v", retries, sliderPos)
+					page.BringToFront().Do(ctx)
+				}
+
+				time.Sleep(250 * time.Millisecond)
+				retries++
+				continue
+			} else {
+				retries = 0
+			}
+
+			// scroll to the next batch by focusing the last node
 			lastNode = nodes[len(nodes)-1]
 			if err := dom.Focus().WithNodeID(lastNode.NodeID).Do(ctx); err != nil {
 				return err
 			}
-
-			n = n + len(nodes)
 
 			// check that each one is already downloaded
 			for _, node := range nodes {
