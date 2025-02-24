@@ -1331,6 +1331,7 @@ func (s *Session) resync() func(context.Context) error {
 		n := 0
 		dlCnt := 0
 		retries := 0
+		lastLogN := 0
 		for {
 			// find all currently visible photos
 			var nodes []*cdp.Node
@@ -1381,9 +1382,13 @@ func (s *Session) resync() func(context.Context) error {
 					break
 				}
 
-				if retries%40 == 0 {
-					log.Debug().Msgf("Retries: %d, sliderPos: %v", retries, sliderPos)
+				if retries%50 == 0 {
 					page.BringToFront().Do(ctx)
+					chromedp.KeyEvent(kb.PageDown).Do(ctx)
+				}
+
+				if retries%500 == 0 {
+					log.Debug().Msgf("Retried getting new items: %d, sliderPos: %v", retries, sliderPos)
 				}
 
 				time.Sleep(250 * time.Millisecond)
@@ -1428,7 +1433,10 @@ func (s *Session) resync() func(context.Context) error {
 				}
 			}
 
-			log.Info().Msgf("resynced %v items, downloaded %v new items", n, dlCnt)
+			if n-lastLogN >= 500 {
+				log.Info().Msgf("in total: resynced %v items, downloaded %v new items", n, dlCnt)
+				lastLogN = n
+			}
 		}
 
 		// Check if there are folders in the dl dir that were not seen in gphotos
