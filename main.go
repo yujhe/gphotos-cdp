@@ -1421,10 +1421,11 @@ func (s *Session) resync() func(context.Context) error {
 					dlErrChan := make(chan error, 1)
 					go s.dlAndProcess(ctx, dlErrChan, location)
 					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
-					if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
-						return err
-					}
 					dlCnt++
+				}
+
+				if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
+					return err
 				}
 			}
 
