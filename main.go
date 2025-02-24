@@ -1574,8 +1574,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 }
 
 func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
-	log.Trace().Msgf("Processing %d jobs", len(*jobs))
-
 	n := 0
 	for {
 		dlCount := 0
@@ -1609,7 +1607,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 				*jobs = (*jobs)[1:]
 			}
 
-			if n%500 == 0 {
+			if (n-1)%500 == 0 {
 				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
 			}
 
@@ -1617,7 +1615,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 				break
 			}
 		} else {
-			if n%500 == 0 {
+			if (n-1)%500 == 0 {
 				log.Info().Msgf("%d jobs, %d still in progress", len(*jobs), dlCount)
 			}
 
