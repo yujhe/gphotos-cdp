@@ -50,6 +50,8 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
 
+	"slices"
+
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -1099,8 +1101,10 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 			select {
 			case p := <-dlProgress:
 				if p {
+					// download done
 					break progressLoop
 				} else {
+					// still downloading
 					dlTimeout.Reset(time.Minute)
 				}
 			case <-dlTimeout.C:
@@ -1197,21 +1201,23 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 	}
 
 	go func() {
-		for i, job := range jobs {
-			select {
-			case err := <-job:
-				if err != nil {
-					outerErrChan <- err
-					return
-				} else {
-					jobs = append(jobs[:i], jobs[i+1:]...)
+		for {
+			for i, job := range jobs {
+				select {
+				case err := <-job:
+					if err != nil {
+						outerErrChan <- err
+						return
+					} else {
+						jobs = slices.Delete(jobs, i, i+1)
+					}
+				default:
 				}
-			default:
-				time.Sleep(10 * time.Millisecond)
 			}
 			if len(jobs) == 0 {
 				break
 			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		outerErrChan <- nil
 	}()
@@ -1369,19 +1375,24 @@ func (s *Session) resync() func(context.Context) error {
 
 			if len(nodes) == 0 {
 				// New new nodes found, does it look like we are done?
-				if retries > 8 && sliderPos > math.Max(0.95, float64(1-(50/n))) {
+				if retries > 40 && sliderPos > math.Max(0.95, float64(1-(50/n))) {
 					break
 				}
 
-				if retries%50 == 0 {
+				if retries%20 == 0 {
+					// We seem to be stuck, manually scrolling might help
 					c := chromedp.FromContext(ctx)
 					target.ActivateTarget(c.Target.TargetID).Do(ctx)
 					chromedp.KeyEvent(kb.PageDown).Do(ctx)
 				}
 
+				if retries > 400 {
+					return errors.New("too many retries trying to get new items")
+				}
+
 				retries++
 
-				if retries%50 == 0 {
+				if retries%10 == 0 {
 					log.Debug().Msgf("Retried getting new items %d times at %0.2f%% done", retries, sliderPos*100)
 				}
 
