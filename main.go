@@ -1062,167 +1062,167 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // dlAndProcess creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s *Session) dlAndProcess(ctx context.Context, location string) chan error {
-	outerErrChan := make(chan error, 1)
+func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, location string) {
+	log.Trace().Msgf("entering dlAndProcess for %v", location)
+	ctx, cancel := chromedp.NewContext(ctx)
+	defer cancel()
+
 	jobs := [](chan error){}
 
+	ctx = SetContextLocks(ctx)
+	listenNavEvents(ctx)
+
+	nextDl := s.nextDl
+
+	log.Trace().Msgf("Navigating to %v", location)
+	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+	if err != nil {
+		outerErrChan <- err
+		return
+	}
+	if resp.Status == http.StatusOK {
+		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+	} else {
+		outerErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+		return
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	log.Trace().Msgf("Getting photo data for %v", location)
+	photoDataChan := make(chan PhotoData, 2)
 	go func() {
-		ctx, cancel := chromedp.NewContext(ctx)
-		defer cancel()
-		ctx = SetContextLocks(ctx)
-		listenNavEvents(ctx)
-
-		nextDl := s.nextDl
-
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+		data, err := s.getPhotoData(ctx)
 		if err != nil {
 			outerErrChan <- err
-			return
-		}
-		if resp.Status == http.StatusOK {
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 		} else {
-			outerErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+			// We may need two of these:
+			photoDataChan <- data
+			photoDataChan <- data
+		}
+	}()
+
+	dlHandler := func(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool) {
+		log.Trace().Msgf("entering dlHandler for %v", dl.GUID)
+		dlTimeout := time.NewTimer(time.Minute)
+	progressLoop:
+		for {
+			select {
+			case p := <-dlProgress:
+				if p {
+					break progressLoop
+				} else {
+					dlTimeout.Reset(time.Minute)
+				}
+			case <-dlTimeout.C:
+				errChan <- fmt.Errorf("timeout waiting for download to complete for %v", location)
+				return
+			}
+		}
+
+		data := <-photoDataChan
+
+		outDir, err := s.makeOutDir(location)
+		if err != nil {
+			errChan <- err
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
 
-		photoDataChan := make(chan PhotoData, 2)
-		go func() {
-			data, err := s.getPhotoData(ctx)
-			if err != nil {
-				outerErrChan <- err
-			} else {
-				// We may need two of these:
-				photoDataChan <- data
-				photoDataChan <- data
-			}
-		}()
-
-		dlHandler := func(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool) {
-			dlTimeout := time.NewTimer(time.Minute)
-		progressLoop:
-			for {
-				select {
-				case p := <-dlProgress:
-					if p {
-						break progressLoop
-					} else {
-						dlTimeout.Reset(time.Minute)
-					}
-				case <-dlTimeout.C:
-					errChan <- fmt.Errorf("timeout waiting for download to complete for %v", location)
-					return
-				}
-			}
-
-			data := <-photoDataChan
-
-			outDir, err := s.makeOutDir(location)
+		var filePaths []string
+		if strings.HasSuffix(dl.suggestedFilename, ".zip") {
+			var err error
+			filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dl.GUID), outDir)
 			if err != nil {
 				errChan <- err
 				return
 			}
-
-			var filePaths []string
-			if strings.HasSuffix(dl.suggestedFilename, ".zip") {
-				var err error
-				filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dl.GUID), outDir)
-				if err != nil {
-					errChan <- err
-					return
-				}
+		} else {
+			var filename string
+			if dl.suggestedFilename != "download" && dl.suggestedFilename != "" {
+				filename = dl.suggestedFilename
 			} else {
-				var filename string
-				if dl.suggestedFilename != "download" && dl.suggestedFilename != "" {
-					filename = dl.suggestedFilename
-				} else {
-					filename = data.filename
-				}
-
-				if isOriginal {
-					// to ensure the filename is not the same as the other download, change e.g. image_1.jpg to image_1_original.jpg
-					ext := filepath.Ext(filename)
-					filename = strings.TrimSuffix(filename, ext) + originalSuffix + ext
-				}
-
-				newFile := filepath.Join(outDir, filename)
-				log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
-				if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
-					errChan <- err
-					return
-				}
-				filePaths = []string{newFile}
+				filename = data.filename
 			}
 
-			if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
+			if isOriginal {
+				// to ensure the filename is not the same as the other download, change e.g. image_1.jpg to image_1_original.jpg
+				ext := filepath.Ext(filename)
+				filename = strings.TrimSuffix(filename, ext) + originalSuffix + ext
+			}
+
+			newFile := filepath.Join(outDir, filename)
+			log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
+			if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
 				errChan <- err
 				return
 			}
-
-			for _, f := range filePaths {
-				if err := doRun(f); err != nil {
-					errChan <- err
-					return
-				}
-			}
-
-			errChan <- nil
+			filePaths = []string{newFile}
 		}
 
-		errChan1 := make(chan error, 1)
-		jobs = append(jobs, errChan1)
-		hasOriginalChan := make(chan bool, 1)
+		if err := s.doFileDateUpdate(ctx, data.date, filePaths); err != nil {
+			errChan <- err
+			return
+		}
+
+		for _, f := range filePaths {
+			if err := doRun(f); err != nil {
+				errChan <- err
+				return
+			}
+		}
+
+		errChan <- nil
+	}
+
+	errChan1 := make(chan error, 1)
+	jobs = append(jobs, errChan1)
+	hasOriginalChan := make(chan bool, 1)
+
+	go func() {
+		hasOriginal := false
+		dl, dlProgress, err := s.download(ctx, location, false, &hasOriginal, nextDl)
+		if err != nil {
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+			outerErrChan <- err
+		} else {
+			hasOriginalChan <- hasOriginal
+			go dlHandler(dl, dlProgress, errChan1, false)
+		}
+	}()
+
+	if <-hasOriginalChan {
+		errChan2 := make(chan error, 1)
+		jobs = append(jobs, errChan2)
 
 		go func() {
-			hasOriginal := false
-			dl, dlProgress, err := s.download(ctx, location, false, &hasOriginal, nextDl)
+			dl, dlProgress, err := s.download(ctx, location, false, nil, nextDl)
 			if err != nil {
 				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 				outerErrChan <- err
 			} else {
-				hasOriginalChan <- hasOriginal
-				go dlHandler(dl, dlProgress, errChan1, false)
+				go dlHandler(dl, dlProgress, errChan2, false)
 			}
 		}()
+	}
 
-		if <-hasOriginalChan {
-			errChan2 := make(chan error, 1)
-			jobs = append(jobs, errChan2)
-
-			go func() {
-				dl, dlProgress, err := s.download(ctx, location, false, nil, nextDl)
+	go func() {
+		for i, job := range jobs {
+			select {
+			case err := <-job:
 				if err != nil {
-					dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 					outerErrChan <- err
+					return
 				} else {
-					go dlHandler(dl, dlProgress, errChan2, false)
+					jobs = append(jobs[:i], jobs[i+1:]...)
 				}
-			}()
-		}
-
-		go func() {
-			for i, job := range jobs {
-				select {
-				case err := <-job:
-					if err != nil {
-						outerErrChan <- err
-						return
-					} else {
-						jobs = append(jobs[:i], jobs[i+1:]...)
-					}
-				default:
-					time.Sleep(10 * time.Millisecond)
-				}
-				if len(jobs) == 0 {
-					break
-				}
+			default:
+				time.Sleep(10 * time.Millisecond)
 			}
-			outerErrChan <- nil
-		}()
+			if len(jobs) == 0 {
+				break
+			}
+		}
+		outerErrChan <- nil
 	}()
-
-	return outerErrChan
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -1425,7 +1425,9 @@ func (s *Session) resync() func(context.Context) error {
 					// asynchronously create a new chromedp context, then in that
 					// context navigate to that photo and call dlAndProcess
 					location := "https://photos.google.com/photo/" + imageId
-					asyncJobs = append(asyncJobs, Job{location, s.dlAndProcess(ctx, location)})
+					dlErrChan := make(chan error, 1)
+					go s.dlAndProcess(ctx, dlErrChan, location)
+					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 					if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
 						return err
 					}
@@ -1504,10 +1506,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 				}
 			}
 
-			var newJob chan error = nil
 			if len(entries) == 0 {
 				// Local dir doesn't exist or is empty, continue downloading
-				newJob = s.dlAndProcess(ctx, location)
+				dlErrChan := make(chan error, 1)
+				go s.dlAndProcess(ctx, dlErrChan, location)
+				asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 			} else if *fixFlag {
 				var files []fs.FileInfo
 				for _, v := range entries {
@@ -1527,8 +1530,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 			} else {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
-
-			asyncJobs = append(asyncJobs, Job{location, newJob})
 
 			if err := s.processJobs(&asyncJobs, *workersFlag-1, true); err != nil {
 				return err
