@@ -1202,9 +1202,10 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 
 	go func() {
 		for {
-			for i, job := range jobs {
+			i := 0
+			for {
 				select {
-				case err := <-job:
+				case err := <-jobs[i]:
 					if err != nil {
 						outerErrChan <- err
 						return
@@ -1212,6 +1213,10 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 						jobs = slices.Delete(jobs, i, i+1)
 					}
 				default:
+					i++
+				}
+				if i >= len(jobs) {
+					break
 				}
 			}
 			if len(jobs) == 0 {
