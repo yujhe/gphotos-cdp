@@ -51,8 +51,6 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
 
-	"slices"
-
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -801,14 +799,14 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 		)
 		muTabActivity.Unlock()
 
+		if err == nil || i > 5 {
+			break
+		}
+
 		if i <= 5 && (err == errNoDownloadButton || err == errCouldNotPressDownloadButton) {
 			log.Debug().Msgf("Trying to request download again after error: %v", err)
 		} else if err != nil {
 			return err
-		}
-
-		if i > 5 {
-			break
 		}
 
 		time.Sleep(20 * time.Millisecond)
@@ -1080,7 +1078,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 // dlAndProcess creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory
 func (s *Session) processDownload(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool, location string, photoDataChan chan PhotoData) {
-	log.Trace().Msgf("entering dlHandler for %v", dl.GUID)
+	log.Trace().Msgf("entering processDownload for %v", dl.GUID)
 	dlTimeout := time.NewTimer(time.Minute)
 progressLoop:
 	for {
@@ -1151,6 +1149,10 @@ progressLoop:
 	}
 
 	errChan <- nil
+
+	for _, f := range filePaths {
+		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), data.date.Format(time.DateOnly))
+	}
 }
 
 // dlAndProcess starts a download then sends it to processDownload for processing
@@ -1222,6 +1224,8 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 			} else {
 				go s.processDownload(dl, dlProgress, errChan2, true, location, photoDataChan)
 			}
+		} else {
+			errChan2 <- nil
 		}
 	}()
 
@@ -1230,6 +1234,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		for {
 			select {
 			case err := <-jobs[i]:
+				log.Trace().Msgf("dlAndProcess: job result: %s for %s", err, location)
 				if err != nil {
 					// Error downloading original or generated image, remove files already downloaded
 					outDir, errTmp := s.makeOutDir(location)
@@ -1241,7 +1246,8 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 					outerErrChan <- err
 					return
 				} else {
-					jobs = slices.Delete(jobs, i, i+1)
+					jobs[i] = jobs[0]
+					jobs = jobs[1:]
 				}
 			default:
 				i++
@@ -1254,6 +1260,10 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+
+		if timedLogReady("dlAndProcessFinalLoop"+location, 60*time.Second) {
+			log.Trace().Msgf("dlAndProcess: waiting for %d jobs to finish for %s", len(jobs), location)
+		}
 	}
 	outerErrChan <- nil
 }
@@ -1787,7 +1797,6 @@ func doFileDateUpdate(date time.Time, filePaths []string) error {
 		if err := setFileDate(f, date); err != nil {
 			return err
 		}
-		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), date.Format(time.DateOnly))
 	}
 
 	return nil
