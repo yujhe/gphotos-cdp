@@ -56,20 +56,21 @@ import (
 )
 
 var (
-	nItemsFlag   = flag.Int("n", -1, "number of items to download. If negative, get them all.")
-	devFlag      = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	dlDirFlag    = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag    = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
-	runFlag      = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
-	verboseFlag  = flag.Bool("v", false, "be verbose")
-	fileDateFlag = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
-	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
-	jsonLogFlag  = flag.Bool("json", false, "output logs in JSON format")
-	logLevelFlag = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
-	fixFlag      = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size")
-	lastDoneFlag = flag.String("lastdone", ".lastdone", "name of file to store last done URL in (in dlDir)")
-	workersFlag  = flag.Int("workers", 10, "number of concurrent downloads allowed")
-	albumIdFlag  = flag.String("album", "", "ID of album to download, has no effect if lastdone file is populated")
+	nItemsFlag     = flag.Int("n", -1, "number of items to download. If negative, get them all.")
+	devFlag        = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
+	dlDirFlag      = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	startFlag      = flag.String("start", "", "scroll to this position (in percent) or in legacy mode start at this photo URL")
+	runFlag        = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	verboseFlag    = flag.Bool("v", false, "be verbose")
+	fileDateFlag   = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
+	headlessFlag   = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
+	jsonLogFlag    = flag.Bool("json", false, "output logs in JSON format")
+	logLevelFlag   = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	fixFlag        = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size, then update date if wrong (legacy mode only)")
+	lastDoneFlag   = flag.String("lastdone", ".lastdone", "name of file to store last done URL in relative to dlDir (legacy mode only)")
+	workersFlag    = flag.Int("workers", 6, "number of concurrent downloads allowed")
+	albumIdFlag    = flag.String("album", "", "ID of album to download, has no effect if lastdone file is populated")
+	legacyModeFlag = flag.Bool("legacy", false, "use the legacy download flow, instead of the new one that is much faster at skipping existing files")
 )
 
 var tick = 500 * time.Millisecond
@@ -144,19 +145,26 @@ func main() {
 	}
 
 	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(s.resync()),
-		// chromedp.ActionFunc(s.firstNav),
-		// chromedp.ActionFunc(func(ctx context.Context) error {
-		// 	var location string
-		// 	if err := chromedp.Location(&location).Do(ctx); err != nil {
-		// 		return err
-		// 	}
-		// 	log.Debug().Msgf("Location: %v", location)
-		// 	return nil
-		// }),
-		// chromedp.ActionFunc(s.navN(*nItemsFlag)),
+		chromedp.ActionFunc(s.firstNav),
 	); err != nil {
 		log.Fatal().Msg(err.Error())
+		return
+	}
+
+	if *legacyModeFlag {
+		if err := chromedp.Run(ctx,
+			chromedp.ActionFunc(s.navN(*nItemsFlag)),
+		); err != nil {
+			log.Fatal().Msg(err.Error())
+			return
+		}
+	} else {
+		if err := chromedp.Run(ctx,
+			chromedp.ActionFunc(s.resync()),
+		); err != nil {
+			log.Fatal().Msg(err.Error())
+			return
+		}
 	}
 
 	log.Info().Msg("Done")
@@ -432,64 +440,166 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	// This is only used to ensure page is loaded
-	if err := s.setFirstItem(ctx); err != nil {
-		return err
-	}
-
-	if *startFlag != "" {
-		// TODO(mpl): use RunResponse
-		chromedp.Navigate(*startFlag).Do(ctx)
-		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-		return nil
-	}
-
 	relPath := ""
 	if *albumIdFlag != "" {
 		relPath = "album/" + *albumIdFlag
 	}
 
-	if s.lastDone != "" {
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(s.lastDone))
+	if *legacyModeFlag {
+		// This is only used to ensure page is loaded
+		if err := s.setFirstItem(ctx); err != nil {
+			return err
+		}
+
+		if *startFlag != "" {
+			// TODO(mpl): use RunResponse
+			chromedp.Navigate(*startFlag).Do(ctx)
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			return nil
+		}
+
+		if s.lastDone != "" {
+			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(s.lastDone))
+			if err != nil {
+				return err
+			}
+			if resp.Status == http.StatusOK {
+				chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+				log.Info().Msgf("Successfully navigated back to last done item: %s", s.lastDone)
+				return nil
+			}
+			lastDoneFile := filepath.Join(s.dlDir, *lastDoneFlag)
+			log.Info().Msgf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
+			s.lastDone = ""
+			if err := os.Remove(lastDoneFile); err != nil {
+				if os.IsNotExist(err) {
+					log.Err(err).Msgf("Failed to remove %v file because it was already gone.", lastDoneFile)
+				}
+				return err
+			}
+		}
+
+		// restart from scratch
+		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
 		if err != nil {
 			return err
 		}
-		if resp.Status == http.StatusOK {
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			log.Info().Msgf("Successfully navigated back to last done item: %s", s.lastDone)
-			return nil
+		code := resp.Status
+		if code != http.StatusOK {
+			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
 		}
-		lastDoneFile := filepath.Join(s.dlDir, *lastDoneFlag)
-		log.Info().Msgf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
-		s.lastDone = ""
-		if err := os.Remove(lastDoneFile); err != nil {
-			if os.IsNotExist(err) {
-				log.Err(err).Msgf("Failed to remove %v file because it was already gone.", lastDoneFile)
-			}
+		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+
+		log.Debug().Msg("Finding end of page")
+
+		if err := s.navToEnd(ctx); err != nil {
 			return err
 		}
+
+		if err := s.navToLast(ctx); err != nil {
+			return err
+		}
+	} else {
+		if relPath != "" {
+			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
+			if err != nil {
+				return err
+			}
+			code := resp.Status
+			if code != http.StatusOK {
+				return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
+			}
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+		}
+
+		if *startFlag != "" {
+			// This is only used to ensure page is loaded
+			if err := s.setFirstItem(ctx); err != nil {
+				return err
+			}
+			chromedp.KeyEvent(kb.End).Do(ctx)
+			time.Sleep(100 * time.Millisecond)
+			chromedp.KeyEvent(kb.End).Do(ctx)
+
+			expectedSliderPos, err := strconv.ParseFloat(*startFlag, 64)
+			expectedSliderPos /= 100.0
+			if err != nil {
+				return errors.New("could not parse -start value, " + err.Error())
+			}
+
+			time.Sleep(500 * time.Millisecond)
+			log.Info().Msgf("Attempting to scroll to %.2f%%", expectedSliderPos*100)
+
+			var sliderNodes []*cdp.Node
+			fineTuning := 0
+			lastSliderPos := -100.0
+			for range 50 {
+				if fineTuning == 0 {
+					if err := chromedp.Run(ctx,
+						chromedp.Evaluate(fmt.Sprintf(`(function() {
+							const main = document.querySelector('[role="main"]');
+							main.scrollTo(0, main.scrollHeight*%f);
+						})();`, expectedSliderPos), nil),
+					); err != nil {
+						return err
+					}
+				} else {
+					var key string
+					if lastSliderPos > expectedSliderPos && fineTuning == 1 {
+						key = kb.PageUp
+					} else if lastSliderPos < expectedSliderPos && fineTuning == 1 {
+						key = kb.PageDown
+					} else if lastSliderPos > expectedSliderPos && fineTuning == 2 {
+						key = kb.ArrowUp
+					} else if lastSliderPos < expectedSliderPos && fineTuning == 2 {
+						key = kb.ArrowDown
+					}
+
+					if key != "" {
+						if err := chromedp.KeyEvent(key).Do(ctx); err != nil {
+							return errors.New("could not press key, " + err.Error())
+						}
+					}
+				}
+
+				if len(sliderNodes) == 0 {
+					time.Sleep(200 * time.Millisecond)
+					if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 4*time.Second); err != nil {
+						return errors.New("slider position node not found, " + err.Error())
+					}
+				}
+
+				posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
+				if !exists {
+					return errors.New("slider position not found")
+				}
+				sliderPos, err := strconv.ParseFloat(posStr, 64)
+				if err != nil {
+					return errors.New("slider position not found, " + err.Error())
+				}
+
+				if fineTuning == 0 && math.Abs(lastSliderPos-sliderPos) < 0.001 {
+					fineTuning = 1
+				} else if math.Abs(sliderPos-expectedSliderPos) > math.Abs(lastSliderPos-expectedSliderPos) {
+					fineTuning++
+				}
+
+				if fineTuning > 2 {
+					break
+				}
+
+				lastSliderPos = sliderPos
+				time.Sleep(250 * time.Millisecond)
+			}
+			log.Debug().Msgf("final slider position: %.2f%%", lastSliderPos*100)
+		}
 	}
 
-	// restart from scratch
-	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
-	if err != nil {
+	var location string
+	if err := chromedp.Location(&location).Do(ctx); err != nil {
 		return err
 	}
-	code := resp.Status
-	if code != http.StatusOK {
-		return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
-	}
-	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-
-	log.Debug().Msg("Finding end of page")
-
-	if err := s.navToEnd(ctx); err != nil {
-		return err
-	}
-
-	if err := s.navToLast(ctx); err != nil {
-		return err
-	}
+	log.Debug().Msgf("Location: %v", location)
 
 	return nil
 }
@@ -977,7 +1087,9 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 	timeout2 := time.NewTimer(60 * time.Second)
 
 	for {
-		log.Trace().Msgf("Checking download status of %v", location)
+		if timedLogReady("downloadStatus"+location, 10*time.Second) {
+			log.Trace().Msgf("Checking download status of %v", location)
+		}
 
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
@@ -1158,8 +1270,6 @@ progressLoop:
 // dlAndProcess starts a download then sends it to processDownload for processing
 func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, location string) {
 	log.Trace().Msgf("entering dlAndProcess for %v", location)
-	ctx, cancel := chromedp.NewContext(ctx)
-	defer cancel()
 
 	jobs := [](chan error){}
 
@@ -1474,7 +1584,11 @@ func (s *Session) resync() func(context.Context) error {
 					// context navigate to that photo and call dlAndProcess
 					location := "https://photos.google.com/photo/" + imageId
 					dlErrChan := make(chan error, 1)
-					go s.dlAndProcess(ctx, dlErrChan, location)
+					go func() {
+						ctx, cancel := chromedp.NewContext(ctx)
+						defer cancel()
+						s.dlAndProcess(ctx, dlErrChan, location)
+					}()
 					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 					dlCnt++
 				}
@@ -1559,7 +1673,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if len(entries) == 0 {
 				// Local dir doesn't exist or is empty, continue downloading
 				dlErrChan := make(chan error, 1)
-				go s.dlAndProcess(ctx, dlErrChan, location)
+				s.dlAndProcess(ctx, dlErrChan, location)
 				asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 			} else if *fixFlag {
 				var files []fs.FileInfo
