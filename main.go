@@ -1567,10 +1567,10 @@ func (s *Session) resync() func(context.Context) error {
 			var nodes []*cdp.Node
 			var err error
 			if s.startNodeParent != nil {
-				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
+				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
 				s.startNodeParent = nil
 			} else {
-				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
+				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
 			}
 			if err != nil {
 				return err
@@ -1691,15 +1691,8 @@ func (s *Session) resync() func(context.Context) error {
 							dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
 							return
 						}
-						time.Sleep(1000 * time.Millisecond)
+						time.Sleep(400 * time.Millisecond)
 
-						var isHighlight bool
-						chromedp.Evaluate(`document.body.textContent.indexOf('Your highlight video will be ready soon') != -1`, &isHighlight).Do(ctx)
-
-						if isHighlight {
-							dlErrChan <- errStillProcessing
-							return
-						}
 						s.dlAndProcess(ctx, dlErrChan, location)
 					}()
 					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
