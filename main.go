@@ -222,6 +222,7 @@ type Session struct {
 	startNodeParent *cdp.Node
 	nextDl          chan DownloadChannels
 	err             chan error
+	photoRelPath    string
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -446,9 +447,8 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	relPath := ""
 	if *albumIdFlag != "" {
-		relPath = "album/" + *albumIdFlag
+		s.photoRelPath = "/album/" + *albumIdFlag
 	}
 
 	if *legacyModeFlag {
@@ -486,13 +486,13 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		}
 
 		// restart from scratch
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
+		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com"+s.photoRelPath))
 		if err != nil {
 			return err
 		}
 		code := resp.Status
 		if code != http.StatusOK {
-			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
+			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com%s", code, s.photoRelPath)
 		}
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
@@ -506,14 +506,14 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			return err
 		}
 	} else {
-		if relPath != "" {
-			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"+relPath))
+		if s.photoRelPath != "" {
+			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com"+s.photoRelPath))
 			if err != nil {
 				return err
 			}
 			code := resp.Status
 			if code != http.StatusOK {
-				return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/%s", code, relPath)
+				return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com%s", code, s.photoRelPath)
 			}
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 		}
@@ -716,13 +716,13 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 		}
 
 		photoHref, ok := attributes["href"]
-		if !ok || !strings.HasPrefix(photoHref, "./photo/") {
-			time.Sleep(tick)
-			continue
+		if ok {
+			res, err := imageIdFromUrl(photoHref)
+			if err == nil {
+				firstItem = res
+				break
+			}
 		}
-
-		firstItem = strings.TrimPrefix(photoHref, "./photo/")
-		break
 	}
 	log.Debug().Msgf("Page loaded, most recent item in the feed is: %s", firstItem)
 	return nil
@@ -1105,16 +1105,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
 
 				// Click on info button
-				// log.Debug().Msg("Date not visible, clicking on i button")
-				// var nodes []*cdp.Node
-				// if err := chromedp.Nodes(`[aria-label="Open info"]`, &nodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
-				// 	return err
-				// }
-				// if len(nodes) > 0 {
-				// 	if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
-				// 		return err
-				// 	}
-				// }
+				log.Debug().Msg("Date not visible, clicking on i button")
 				if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('[aria-label="Open info"]')].pop()?.click()`, nil).Do(ctx); err != nil {
 					return err
 				}
@@ -1554,7 +1545,7 @@ func contains(slice []string, str string) bool {
 }
 
 // This function can be used instead of NavN to resync the list of photos
-// Use [...document.querySelectorAll('a[href^="./photo/"]')] to find all visible photos
+// Use [...document.querySelectorAll('a[href^="./{relPath}photo/"]')] to find all visible photos
 // Check that each one is already downloaded. Optionally check/update date from the element
 // attr, e.g. aria-label="Photo - Landscape - Feb 12, 2025, 6:34:39 PM"
 // Then do .pop().focus() on the last a element found to scroll to it and make more photos visible
@@ -1576,10 +1567,10 @@ func (s *Session) resync() func(context.Context) error {
 			var nodes []*cdp.Node
 			var err error
 			if s.startNodeParent != nil {
-				err = chromedp.Nodes(`a[href^="./photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
+				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
 				s.startNodeParent = nil
 			} else {
-				err = chromedp.Nodes(`a[href^="./photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
+				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
 			}
 			if err != nil {
 				return err
