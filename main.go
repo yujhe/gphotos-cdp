@@ -194,9 +194,12 @@ type DownloadChannels struct {
 }
 
 var lastMessageForKey map[string]time.Time = make(map[string]time.Time)
+var muLog sync.Mutex = sync.Mutex{}
 
 func timedLogReady(key string, duration time.Duration) bool {
 	if lastMessageForKey != nil {
+		muLog.Lock()
+		defer muLog.Unlock()
 		t := lastMessageForKey[key]
 		if t.IsZero() || time.Since(t) >= duration {
 			lastMessageForKey[key] = time.Now()
@@ -1017,9 +1020,6 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
 func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
-	muTabActivity.Lock()
-	defer muTabActivity.Unlock()
-
 	var filename string
 	var filesize int64 = 0
 	var dateStr string
@@ -1031,91 +1031,109 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 	var n = 0
 	for {
-		c := chromedp.FromContext(ctx)
-		target.ActivateTarget(c.Target.TargetID).Do(ctx)
+		if err := func() error {
+			muTabActivity.Lock()
+			defer muTabActivity.Unlock()
 
-		n++
-		var filesizeStr string
+			c := chromedp.FromContext(ctx)
+			target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
-		if err := chromedp.Run(ctx,
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
-		); err != nil {
+			n++
+			var filesizeStr string
+
+			if err := chromedp.Run(ctx,
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
+			); err != nil {
+				return err
+			}
+
+			if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
+				filename = strings.TrimPrefix(filename, "Filename: ")
+				dateStr = strings.TrimPrefix(dateStr, "Date taken: ")
+				timeStr = strings.TrimPrefix(timeStr, "Time taken: ")
+				filesizeStr = strings.Replace(strings.TrimPrefix(filesizeStr, "File size: "), ",", "", -1)
+				log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
+				log.Trace().Msgf("Parsing filename: %v", filename)
+				log.Trace().Msgf("Parsing file size: %v", filesizeStr)
+
+				// Parse file size
+				if len(filesizeStr) > 0 {
+					var unitFactor int64 = 1
+					if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
+						filesizeStr = s
+					} else if s := strings.TrimSuffix(filesizeStr, " KB"); s != filesizeStr {
+						unitFactor = 1000
+						filesizeStr = s
+					} else if s := strings.TrimSuffix(filesizeStr, " MB"); s != filesizeStr {
+						unitFactor = 1000 * 1000
+						filesizeStr = s
+					} else if s := strings.TrimSuffix(filesizeStr, " GB"); s != filesizeStr {
+						unitFactor = 1000 * 1000 * 1000
+						filesizeStr = s
+					}
+					filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(filesizeStr), 64)
+					if err != nil {
+						return err
+					}
+					filesize = int64(filesizeFloat * float64(unitFactor))
+					log.Trace().Msgf("Parsed file size: %v bytes", filesize)
+				}
+
+				// Handle dates from current year (UI doesn't show current year so we add it)
+				if !yearPattern.MatchString(dateStr) {
+					dateStr += fmt.Sprintf(", %d", time.Now().Year())
+				}
+
+				// Handle special days like "Yesterday" and "Today"
+				timeStr = strings.Replace(timeStr, "Yesterday", time.Now().AddDate(0, 0, -1).Format("Mon"), -1)
+				timeStr = strings.Replace(timeStr, "Today", time.Now().Format("Mon"), -1)
+
+				// If timezone is not visible, use current timezone (parse provided date to account for DST)
+				if len(tzStr) == 0 {
+					t, err := time.Parse("Jan 2, 2006", dateStr)
+					if err != nil {
+						t = time.Now()
+					}
+					_, offset := t.Zone()
+					tzStr = fmt.Sprintf("%+03d%02d", offset/3600, (offset%3600)/60)
+				}
+			} else {
+				log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
+
+				// Click on info button
+				// log.Debug().Msg("Date not visible, clicking on i button")
+				// var nodes []*cdp.Node
+				// if err := chromedp.Nodes(`[aria-label="Open info"]`, &nodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
+				// 	return err
+				// }
+				// if len(nodes) > 0 {
+				// 	if err := chromedp.MouseClickNode(nodes[0]).Do(ctx); err != nil {
+				// 		return err
+				// 	}
+				// }
+				if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('[aria-label="Open info"]')].pop()?.click()`, nil).Do(ctx); err != nil {
+					return err
+				}
+
+				select {
+				case <-timeout1.C:
+					if err := navWithAction(ctx, chromedp.Reload()); err != nil {
+						return err
+					}
+				case <-timeout2.C:
+					return fmt.Errorf("timeout waiting for photo info")
+				case <-time.After(time.Duration(100+n*40) * time.Millisecond):
+				}
+			}
+			return nil
+		}(); err != nil {
 			return PhotoData{}, err
-		}
-
-		if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
-			filename = strings.TrimPrefix(filename, "Filename: ")
-			dateStr = strings.TrimPrefix(dateStr, "Date taken: ")
-			timeStr = strings.TrimPrefix(timeStr, "Time taken: ")
-			filesizeStr = strings.Replace(strings.TrimPrefix(filesizeStr, "File size: "), ",", "", -1)
-			log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
-			log.Trace().Msgf("Parsing filename: %v", filename)
-			log.Trace().Msgf("Parsing file size: %v", filesizeStr)
-
-			// Parse file size
-			if len(filesizeStr) > 0 {
-				var unitFactor int64 = 1
-				if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
-					filesizeStr = s
-				} else if s := strings.TrimSuffix(filesizeStr, " KB"); s != filesizeStr {
-					unitFactor = 1000
-					filesizeStr = s
-				} else if s := strings.TrimSuffix(filesizeStr, " MB"); s != filesizeStr {
-					unitFactor = 1000 * 1000
-					filesizeStr = s
-				} else if s := strings.TrimSuffix(filesizeStr, " GB"); s != filesizeStr {
-					unitFactor = 1000 * 1000 * 1000
-					filesizeStr = s
-				}
-				filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(filesizeStr), 64)
-				if err != nil {
-					return PhotoData{}, err
-				}
-				filesize = int64(filesizeFloat * float64(unitFactor))
-				log.Trace().Msgf("Parsed file size: %v bytes", filesize)
-			}
-
-			// Handle dates from current year (UI doesn't show current year so we add it)
-			if !yearPattern.MatchString(dateStr) {
-				dateStr += fmt.Sprintf(", %d", time.Now().Year())
-			}
-
-			// Handle special days like "Yesterday" and "Today"
-			timeStr = strings.Replace(timeStr, "Yesterday", time.Now().AddDate(0, 0, -1).Format("Mon"), -1)
-			timeStr = strings.Replace(timeStr, "Today", time.Now().Format("Mon"), -1)
-
-			// If timezone is not visible, use current timezone (parse provided date to account for DST)
-			if len(tzStr) == 0 {
-				t, err := time.Parse("Jan 2, 2006", dateStr)
-				if err != nil {
-					t = time.Now()
-				}
-				_, offset := t.Zone()
-				tzStr = fmt.Sprintf("%+03d%02d", offset/3600, (offset%3600)/60)
-			}
+		} else if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
 			break
-		} else {
-			log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
-
-			// Click on info button
-			log.Debug().Msg("Date not visible, clicking on i button")
-			if err := chromedp.Evaluate(`document.querySelector('[aria-label="Open info"]')?.click()`, nil).Do(ctx); err != nil {
-				return PhotoData{}, err
-			}
-
-			select {
-			case <-timeout1.C:
-				if err := navWithAction(ctx, chromedp.Reload()); err != nil {
-					return PhotoData{}, err
-				}
-			case <-timeout2.C:
-				return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
-			case <-time.After(time.Duration(150+n*12) * time.Millisecond):
-			}
 		}
 	}
 
@@ -1668,7 +1686,7 @@ func (s *Session) resync() func(context.Context) error {
 						log.Trace().Msgf("Navigating to %v", location)
 						resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
 						if err != nil {
-							dlErrChan <- err
+							dlErrChan <- fmt.Errorf("error navigating to %v: %w", location, err)
 							return
 						}
 						if resp.Status == http.StatusOK {
