@@ -162,7 +162,7 @@ func main() {
 		}
 	} else {
 		if err := chromedp.Run(ctx,
-			chromedp.ActionFunc(s.resync()),
+			chromedp.ActionFunc(s.resync),
 		); err != nil {
 			log.Fatal().Msg(err.Error())
 			return
@@ -520,9 +520,9 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 		if *startFlag != "" {
 			// This is only used to ensure page is loaded
-			if err := s.setFirstItem(ctx); err != nil {
-				return err
-			}
+			// if err := s.setFirstItem(ctx); err != nil {
+			// 	return err
+			// }
 
 			t, err := time.Parse("Jan 2, 2006", *startFlag)
 			if err != nil {
@@ -553,7 +553,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 				return errors.New("failed to find date nodes class name")
 			}
 
-			bisectBounds := []float64{0.0, 1.0}
+			bisectBounds := []float64{0.0, 2.0}
 			var foundDateNode *cdp.Node
 			for range 100 {
 				scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
@@ -1182,18 +1182,19 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 	timeout2 := time.NewTimer(60 * time.Second)
 
 	for {
-		if timedLogReady("downloadStatus"+location, 10*time.Second) {
-			log.Trace().Msgf("Checking download status of %v", location)
+		if timedLogReady("downloadStatus"+location, 15*time.Second) {
+			log.Debug().Msgf("Checking download status of %v", location)
 		}
 
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
 		var nodes []*cdp.Node
-		if err := chromedp.Nodes(`[aria-label="Video is still processing & can be downloaded later"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+		if err := chromedp.Nodes(`[aria-label^="Video is still processing"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
 			return NewDownload{}, nil, err
 		}
 		isStillProcessing := len(nodes) > 0
 		if isStillProcessing {
+			log.Debug().Msgf("Found still processing dialog, need to press button to remove")
 			// Click the button to close the warning, otherwise it will block navigating to the next photo
 			cl.muKbEvents.Lock()
 			err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
@@ -1552,184 +1553,216 @@ func contains(slice []string, str string) bool {
 // Then repeat until we get to the end
 // If any photos are missing we can asynchronously create a new chromedp context, then in that
 // context navigate to that photo and call dlAndProcess
-func (s *Session) resync() func(context.Context) error {
-	return func(ctx context.Context) error {
-		listenNavEvents(ctx)
+func (s *Session) resync(ctx context.Context) error {
+	listenNavEvents(ctx)
 
-		asyncJobs := []Job{}
-		photoIds := []string{}
-		lastNode := &cdp.Node{}
-		n := 0
-		dlCnt := 0
-		retries := 0
-		for {
-			// find all currently visible photos
-			opts := []chromedp.QueryOption{chromedp.ByQueryAll, chromedp.AtLeast(0)}
-			if s.startNodeParent != nil {
-				opts = append(opts, chromedp.FromNode(s.startNodeParent))
-			}
-
-			var nodes []*cdp.Node
-			if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, opts...).Do(ctx); err != nil {
-				return err
-			}
-
-			if len(nodes) == 0 {
-				log.Info().Msg("No photos to resync")
-				break
-			}
-
-			var sliderNodes []*cdp.Node
-			sliderPos := 0.0
-			sliderText := ""
-			if err := chromedp.Run(ctx,
-				chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-			); err != nil {
-				return err
-			}
-			if len(sliderNodes) > 0 {
-				posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
-				if exists {
-					pos, err := strconv.ParseFloat(posStr, 64)
-					if err == nil {
-						sliderPos = pos
-					}
-				}
-				sliderText, exists = sliderNodes[0].Attribute("aria-valuetext")
-				if !exists {
-					sliderText = ""
-				}
-			}
-
-			// remove already processed nodes
-			for i, node := range nodes {
-				if node == lastNode {
-					nodes = nodes[i+1:]
-					break
-				}
-			}
-
-			n = n + len(nodes)
-
-			if len(nodes) == 0 {
-				// New new nodes found, does it look like we are done?
-				if retries > 40 && sliderPos > math.Max(0.95, float64(1-(50/n))) {
-					break
-				}
-
-				if retries%20 == 0 {
-					// We seem to be stuck, manually scrolling might help
-					c := chromedp.FromContext(ctx)
-					target.ActivateTarget(c.Target.TargetID).Do(ctx)
-					chromedp.KeyEvent(kb.PageDown).Do(ctx)
-				}
-
-				if retries > 400 {
-					return errors.New("too many retries trying to get new items")
-				}
-
-				retries++
-
-				if retries%10 == 0 {
-					log.Debug().Msgf("Retried getting new items %d times at %0.2f%% done", retries, sliderPos*100)
-				}
-
-				time.Sleep(250 * time.Millisecond)
-				continue
-			} else {
-				retries = 0
-			}
-
-			// scroll to the next batch by focusing the last node
-			lastNode = nodes[len(nodes)-1]
-			if err := dom.Focus().WithNodeID(lastNode.NodeID).Do(ctx); err != nil {
-				return err
-			}
-
-			// check that each one is already downloaded
-			for _, node := range nodes {
-				href := node.AttributeValue("href")
-				imageId, err := imageIdFromUrl(href)
-				if err != nil {
-					return err
-				}
-				photoIds = append(photoIds, imageId)
-
-				entries, err := os.ReadDir(filepath.Join(s.dlDir, imageId))
-				if err != nil {
-					if !errors.Is(err, os.ErrNotExist) {
-						return err
-					}
-				}
-
-				if len(entries) == 0 {
-					log.Info().Msgf("Photo %v is missing. Downloading it.", imageId)
-					log.Trace().Msgf("photo %v has attributes %v", imageId, node.Attributes)
-					// asynchronously create a new chromedp context, then in that
-					// context navigate to that photo and call dlAndProcess
-					location := "https://photos.google.com/photo/" + imageId
-					dlErrChan := make(chan error, 1)
-					go func() {
-						ctx, cancel := chromedp.NewContext(ctx)
-						defer cancel()
-
-						ctx = SetContextLocks(ctx)
-						listenNavEvents(ctx)
-
-						log.Trace().Msgf("Navigating to %v", location)
-						resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
-						if err != nil {
-							dlErrChan <- fmt.Errorf("error navigating to %v: %w", location, err)
-							return
-						}
-						if resp.Status == http.StatusOK {
-							chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-						} else {
-							dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-							return
-						}
-						time.Sleep(400 * time.Millisecond)
-
-						s.dlAndProcess(ctx, dlErrChan, location)
-					}()
-					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
-					dlCnt++
-				}
-
-				if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
-					return err
-				}
-			}
-
-			if timedLogReady("resyncLoop", 60*time.Second) {
-				log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
-			}
+	asyncJobs := []Job{}
+	photoIds := []string{}
+	lastNode := &cdp.Node{}
+	n := 0
+	dlCnt := 0
+	retries := 0
+	sliderPos := 0.0
+	sliderText := ""
+	for {
+		// find all currently visible photos
+		log.Trace().Msgf("Finding photo nodes on page")
+		opts := []chromedp.QueryOption{chromedp.ByQueryAll, chromedp.AtLeast(0)}
+		if s.startNodeParent != nil {
+			opts = append(opts, chromedp.FromNode(s.startNodeParent))
+			s.startNodeParent = nil
 		}
 
-		// Check if there are folders in the dl dir that were not seen in gphotos
-		entries, err := os.ReadDir(s.dlDir)
-		if err != nil {
+		var nodes []*cdp.Node
+		if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, opts...).Do(ctx); err != nil {
 			return err
 		}
 
-		deleted := []string{}
-		for _, entry := range entries {
-			if entry.IsDir() && entry.Name() != "tmp" {
-				// Check if the folder name is in the list of photo IDs
-				if !contains(photoIds, entry.Name()) {
-					deleted = append(deleted, entry.Name())
+		if n == 0 && len(nodes) == 0 {
+			log.Info().Msg("No photos to resync")
+			break
+		}
+
+		log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
+
+		var sliderNodes []*cdp.Node
+		if err := chromedp.Run(ctx,
+			chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
+		); err != nil {
+			return err
+		}
+		if len(sliderNodes) > 0 {
+			posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
+			if exists {
+				pos, err := strconv.ParseFloat(posStr, 64)
+				if err == nil {
+					sliderPos = pos
 				}
 			}
-		}
-		if len(deleted) > 0 {
-			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos, list saved to .removed", len(deleted))
-			if err := os.WriteFile(path.Join(s.dlDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
-				return err
+			sliderText, exists = sliderNodes[0].Attribute("aria-valuetext")
+			if !exists {
+				sliderText = ""
 			}
 		}
 
-		return s.processJobs(&asyncJobs, 0, false)
+		// remove already processed nodes
+		for i, node := range nodes {
+			if node == lastNode {
+				log.Trace().Msgf("Found %d nodes, %d have already been processed", len(nodes), i+1)
+				nodes = nodes[i+1:]
+				break
+			}
+		}
+
+		n = n + len(nodes)
+
+		if len(nodes) == 0 {
+			retries++
+
+			// New new nodes found, does it look like we are done?
+			if retries > 400 || (retries > 40 && sliderPos > math.Max(0.95, float64(1-(50/n)))) {
+				break
+			}
+
+			if retries%30 == 0 {
+				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
+				if err := doQueryActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 250*time.Millisecond); err != nil {
+					log.Err(err).Msgf("Error scrolling page down, %v", err)
+				}
+			}
+
+			if retries%10 == 0 {
+				log.Debug().Msgf("Retried getting new items %d times at %0.2f%% done", retries, sliderPos*100)
+			}
+
+			time.Sleep(50 * time.Millisecond)
+			continue
+		} else {
+			retries = 0
+		}
+
+		// check that each one is already downloaded
+		log.Trace().Msgf("Checking %d nodes for new photos", len(nodes))
+		for _, node := range nodes {
+			href := node.AttributeValue("href")
+			imageId, err := imageIdFromUrl(href)
+			if err != nil {
+				return err
+			}
+			photoIds = append(photoIds, imageId)
+
+			entries, err := os.ReadDir(filepath.Join(s.dlDir, imageId))
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+
+			if len(entries) > 0 {
+				continue
+			}
+
+			log.Trace().Msgf("node for photo %v has attributes %v", imageId, node.Attributes)
+
+			var isHighlight bool
+			if err := chromedp.EvaluateAsDevTools(`
+					!!document.querySelector('a[href*="`+imageId+`"][aria-label^="Highlight video"]')
+					`, &isHighlight).Do(ctx); err != nil {
+				log.Err(err).Msg(err.Error())
+			}
+
+			if isHighlight {
+				log.Warn().Msgf("photo %v is a highlight video, skipping", imageId)
+				continue
+			}
+
+			log.Info().Msgf("photo %v is missing. Downloading it.", imageId)
+
+			// asynchronously create a new chromedp context, then in that
+			// context navigate to that photo and call dlAndProcess
+			location := "https://photos.google.com/photo/" + imageId
+			dlErrChan := make(chan error, 1)
+			go func() {
+				ctx, cancel := chromedp.NewContext(ctx)
+				defer cancel()
+
+				ctx = SetContextLocks(ctx)
+				listenNavEvents(ctx)
+
+				log.Trace().Msgf("Navigating to %v", location)
+				resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+				if err != nil {
+					dlErrChan <- fmt.Errorf("error navigating to %v: %w", location, err)
+					return
+				}
+				if resp.Status == http.StatusOK {
+					chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+				} else {
+					dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+					return
+				}
+				time.Sleep(400 * time.Millisecond)
+
+				if err := chromedp.EvaluateAsDevTools(`
+						!![...document.querySelectorAll("div")]
+							.filter(el => el.textContent == "Highlight video" && getComputedStyle(el.parentNode).display != "none").length
+						`, &isHighlight).Do(ctx); err != nil {
+					log.Err(err).Msg(err.Error())
+				}
+
+				if isHighlight {
+					log.Warn().Msgf("photo %v is a highlight video, skipping", imageId)
+					dlErrChan <- nil
+					return
+				}
+
+				s.dlAndProcess(ctx, dlErrChan, location)
+			}()
+			asyncJobs = append(asyncJobs, Job{location, dlErrChan})
+			dlCnt++
+
+			if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
+				return err
+			}
+		}
+		log.Trace().Msgf("Finished processing %d nodes", len(nodes))
+
+		if timedLogReady("resyncLoop", 60*time.Second) {
+			log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+		}
+
+		// scroll to the next batch by focusing the last node
+		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
+		lastNode = nodes[len(nodes)-1]
+		if err := doQueryActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 250*time.Millisecond); err != nil {
+			return err
+		}
 	}
+	log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+
+	// Check if there are folders in the dl dir that were not seen in gphotos
+	entries, err := os.ReadDir(s.dlDir)
+	if err != nil {
+		return err
+	}
+
+	deleted := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != "tmp" {
+			// Check if the folder name is in the list of photo IDs
+			if !contains(photoIds, entry.Name()) {
+				deleted = append(deleted, entry.Name())
+			}
+		}
+	}
+	if len(deleted) > 0 {
+		log.Info().Msgf("Folders found for %d local photos that don't exist on google photos, list saved to .removed", len(deleted))
+		if err := os.WriteFile(path.Join(s.dlDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
+			return err
+		}
+	}
+
+	return s.processJobs(&asyncJobs, 0, false)
 }
 
 // navN successively downloads the currently viewed item, and navigates to the
