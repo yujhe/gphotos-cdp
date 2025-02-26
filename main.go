@@ -1359,23 +1359,6 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 
 	jobs := [](chan error){}
 
-	ctx = SetContextLocks(ctx)
-	listenNavEvents(ctx)
-
-	log.Trace().Msgf("Navigating to %v", location)
-	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
-	if err != nil {
-		outerErrChan <- err
-		return
-	}
-	if resp.Status == http.StatusOK {
-		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-	} else {
-		outerErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-		return
-	}
-	time.Sleep(50 * time.Millisecond)
-
 	photoDataChan := make(chan PhotoData, 2)
 	go func() {
 		log.Trace().Msgf("Getting photo data for %v", location)
@@ -1399,7 +1382,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		if err != nil {
 			log.Trace().Msgf("download of %v failed: %v", location, err)
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-			outerErrChan <- err
+			errChan1 <- err
 			hasOriginalChan <- false
 		} else {
 			hasOriginalChan <- hasOriginal
@@ -1678,6 +1661,23 @@ func (s *Session) resync() func(context.Context) error {
 					go func() {
 						ctx, cancel := chromedp.NewContext(ctx)
 						defer cancel()
+
+						ctx = SetContextLocks(ctx)
+						listenNavEvents(ctx)
+
+						log.Trace().Msgf("Navigating to %v", location)
+						resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+						if err != nil {
+							dlErrChan <- err
+							return
+						}
+						if resp.Status == http.StatusOK {
+							chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+						} else {
+							dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+							return
+						}
+						time.Sleep(50 * time.Millisecond)
 						s.dlAndProcess(ctx, dlErrChan, location)
 					}()
 					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
