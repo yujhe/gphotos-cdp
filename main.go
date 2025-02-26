@@ -1691,7 +1691,15 @@ func (s *Session) resync() func(context.Context) error {
 							dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
 							return
 						}
-						time.Sleep(50 * time.Millisecond)
+						time.Sleep(1000 * time.Millisecond)
+
+						var isHighlight bool
+						chromedp.Evaluate(`document.body.textContent.indexOf('Your highlight video will be ready soon') != -1`, &isHighlight).Do(ctx)
+
+						if isHighlight {
+							dlErrChan <- errStillProcessing
+							return
+						}
 						s.dlAndProcess(ctx, dlErrChan, location)
 					}()
 					asyncJobs = append(asyncJobs, Job{location, dlErrChan})
