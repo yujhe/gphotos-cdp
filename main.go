@@ -1564,15 +1564,13 @@ func (s *Session) resync() func(context.Context) error {
 		retries := 0
 		for {
 			// find all currently visible photos
-			var nodes []*cdp.Node
-			var err error
+			opts := []chromedp.QueryOption{chromedp.ByQueryAll, chromedp.AtLeast(0)}
 			if s.startNodeParent != nil {
-				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
-				s.startNodeParent = nil
-			} else {
-				err = chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
+				opts = append(opts, chromedp.FromNode(s.startNodeParent))
 			}
-			if err != nil {
+
+			var nodes []*cdp.Node
+			if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]:not([aria-label^="Highlight video"])`, &nodes, opts...).Do(ctx); err != nil {
 				return err
 			}
 
@@ -1601,8 +1599,6 @@ func (s *Session) resync() func(context.Context) error {
 				if !exists {
 					sliderText = ""
 				}
-			}
-			if retries == 0 {
 			}
 
 			// remove already processed nodes
@@ -1668,6 +1664,7 @@ func (s *Session) resync() func(context.Context) error {
 
 				if len(entries) == 0 {
 					log.Info().Msgf("Photo %v is missing. Downloading it.", imageId)
+					log.Trace().Msgf("photo %v has attributes %v", imageId, node.Attributes)
 					// asynchronously create a new chromedp context, then in that
 					// context navigate to that photo and call dlAndProcess
 					location := "https://photos.google.com/photo/" + imageId
