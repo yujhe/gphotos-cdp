@@ -80,6 +80,8 @@ var errNoDownloadButton = errors.New("no download button found")
 var errCouldNotPressDownloadButton = errors.New("could not press download button")
 var originalSuffix = "_original"
 
+var yearPattern = regexp.MustCompile(`\d{4}$`)
+
 func main() {
 	zerolog.TimestampFieldName = "dt"
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
@@ -213,9 +215,10 @@ type Session struct {
 	// lastDone is the most recent (wrt to Google Photos timeline) item (its URL
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
-	lastDone string
-	nextDl   chan DownloadChannels
-	err      chan error
+	lastDone        string
+	startNodeParent *cdp.Node
+	nextDl          chan DownloadChannels
+	err             chan error
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -517,81 +520,144 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			if err := s.setFirstItem(ctx); err != nil {
 				return err
 			}
-			chromedp.KeyEvent(kb.End).Do(ctx)
-			time.Sleep(100 * time.Millisecond)
-			chromedp.KeyEvent(kb.End).Do(ctx)
 
-			expectedSliderPos, err := strconv.ParseFloat(*startFlag, 64)
-			expectedSliderPos /= 100.0
+			t, err := time.Parse("Jan 2, 2006", *startFlag)
 			if err != nil {
-				return errors.New("could not parse -start value, " + err.Error())
+				return errors.New("startFlag must be of format 'Jan 2, 2006'")
 			}
+			startDate := t
 
 			time.Sleep(500 * time.Millisecond)
-			log.Info().Msgf("Attempting to scroll to %.2f%%", expectedSliderPos*100)
+			log.Info().Msgf("Attempting to scroll to %v", startDate)
 
-			var sliderNodes []*cdp.Node
-			fineTuning := 0
-			lastSliderPos := -100.0
-			for range 50 {
-				if fineTuning == 0 {
-					if err := chromedp.Run(ctx,
-						chromedp.Evaluate(fmt.Sprintf(`(function() {
+			if err := s.navToEnd(ctx); err != nil {
+				return err
+			}
+
+			// Find class name for date nodes
+			dateNodesClassName := ""
+			for range 20 {
+				chromedp.Evaluate(`
+				document.querySelector('[aria-label^="Select all photos from"]').parentNode.childNodes[1].childNodes[0].childNodes[0].childNodes[0].className
+				`, &dateNodesClassName).Do(ctx)
+				if dateNodesClassName != "" {
+					break
+				}
+				chromedp.KeyEvent(kb.PageUp).Do(ctx)
+				time.Sleep(100 * time.Millisecond)
+			}
+			if dateNodesClassName == "" {
+				return errors.New("failed to find date nodes class name")
+			}
+
+			bisectBounds := []float64{0.0, 1.0}
+			var foundDateNode *cdp.Node
+			for range 100 {
+				scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
+				scrollPos := 0.0
+				log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
+				for range 20 {
+					if err := chromedp.Evaluate(fmt.Sprintf(`
+						(function() {
 							const main = document.querySelector('[role="main"]');
-							main.scrollTo(0, main.scrollHeight*%f);
-						})();`, expectedSliderPos), nil),
-					); err != nil {
+							const scrollTarget = %f;
+							main.scrollTo(0, main.scrollHeight*scrollTarget);
+						})();
+					`, scrollTarget), nil).Do(ctx); err != nil {
 						return err
 					}
-				} else {
-					var key string
-					if lastSliderPos > expectedSliderPos && fineTuning == 1 {
-						key = kb.PageUp
-					} else if lastSliderPos < expectedSliderPos && fineTuning == 1 {
-						key = kb.PageDown
-					} else if lastSliderPos > expectedSliderPos && fineTuning == 2 {
-						key = kb.ArrowUp
-					} else if lastSliderPos < expectedSliderPos && fineTuning == 2 {
-						key = kb.ArrowDown
+					time.Sleep(100 * time.Millisecond)
+					if err := chromedp.Evaluate(`
+						(function() {
+							const main = document.querySelector('[role="main"]');
+							return main.scrollTop/main.scrollHeight;
+						})();
+					`, &scrollPos).Do(ctx); err != nil {
+						return err
 					}
+					if math.Abs(scrollPos-scrollTarget) < 0.002 {
+						break
+					}
+				}
+				log.Trace().Msgf("scroll position: %.2f%%", scrollPos*100)
 
-					if key != "" {
-						if err := chromedp.KeyEvent(key).Do(ctx); err != nil {
-							return errors.New("could not press key, " + err.Error())
+				var dateNodes []*cdp.Node
+				for range 20 {
+					if err := chromedp.Nodes(`div.`+dateNodesClassName, &dateNodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
+						return errors.New("failed to get visible date nodes, " + err.Error())
+					}
+					if len(dateNodes) > 0 {
+						break
+					}
+					chromedp.KeyEvent(kb.PageUp).Do(ctx)
+					time.Sleep(500 * time.Millisecond)
+				}
+				if len(dateNodes) == 0 {
+					return errors.New("no date nodes found")
+				}
+
+				var closestDateNode *cdp.Node
+				var closestDateDiff float64
+				for _, n := range dateNodes {
+					if n.NodeName != "DIV" || n.ChildNodeCount == 0 {
+						continue
+					}
+					dateStr := n.Children[0].NodeValue
+					// Handle special days like "Yesterday" and "Today"
+					if dateStr == "Yesterday" {
+						dateStr = time.Now().AddDate(0, 0, -1).Format("Mon, Jan 2, 2006")
+					} else if dateStr == "Today" {
+						dateStr = time.Now().Format("Mon, Jan 2, 2006")
+					} else if !strings.Contains(dateStr, ",") {
+						for i := range 5 {
+							t := time.Now().AddDate(0, 0, -2-i)
+							if t.Weekday().String() == dateStr {
+								dateStr = t.Format("Mon, Jan 2, 2006")
+								break
+							}
 						}
 					}
-				}
-
-				if len(sliderNodes) == 0 {
-					time.Sleep(200 * time.Millisecond)
-					if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 4*time.Second); err != nil {
-						return errors.New("slider position node not found, " + err.Error())
+					if !yearPattern.MatchString(dateStr) {
+						dateStr += fmt.Sprintf(", %d", time.Now().Year())
+					}
+					t, err := time.Parse("Mon, Jan 2, 2006", dateStr)
+					if err != nil {
+						return errors.New("could not parse date element " + dateStr + " with format 'Mon, Jan 2, 2006'")
+					}
+					diff := t.Sub(startDate).Hours()
+					log.Trace().Msgf("parsed date element %v with distance %d days", t, int(diff/24))
+					if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
+						closestDateNode = n
+						closestDateDiff = diff
 					}
 				}
 
-				posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
-				if !exists {
-					return errors.New("slider position not found")
-				}
-				sliderPos, err := strconv.ParseFloat(posStr, 64)
-				if err != nil {
-					return errors.New("slider position not found, " + err.Error())
-				}
-
-				if fineTuning == 0 && math.Abs(lastSliderPos-sliderPos) < 0.001 {
-					fineTuning = 1
-				} else if math.Abs(sliderPos-expectedSliderPos) > math.Abs(lastSliderPos-expectedSliderPos) {
-					fineTuning++
-				}
-
-				if fineTuning > 2 {
+				if closestDateDiff == 0 && closestDateNode != nil {
+					foundDateNode = closestDateNode
+					log.Debug().Msgf("final scroll position: %.2f%%", scrollTarget*100)
 					break
 				}
 
-				lastSliderPos = sliderPos
-				time.Sleep(250 * time.Millisecond)
+				if closestDateDiff > 0 {
+					bisectBounds[0] = scrollTarget
+				} else if closestDateDiff < 0 {
+					bisectBounds[1] = scrollTarget
+				}
+
+				time.Sleep(50 * time.Millisecond)
 			}
-			log.Debug().Msgf("final slider position: %.2f%%", lastSliderPos*100)
+
+			if foundDateNode == nil {
+				return errors.New("could not find -start date")
+			}
+
+			for foundDateNode.Parent != nil {
+				foundDateNode = foundDateNode.Parent
+				if foundDateNode.AttributeValue("style") != "" {
+					s.startNodeParent = foundDateNode
+					break
+				}
+			}
 		}
 	}
 
@@ -602,6 +668,26 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	log.Debug().Msgf("Location: %v", location)
 
 	return nil
+}
+
+func (s *Session) getSliderPos(ctx context.Context) (float64, error) {
+	var sliderNodes []*cdp.Node
+
+	time.Sleep(200 * time.Millisecond)
+	if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 2*time.Second); err != nil {
+		return 0.0, errors.New("slider position node not found, " + err.Error())
+	}
+
+	posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
+	if !exists {
+		return 0.0, errors.New("slider position not found")
+	}
+	sliderPos, err := strconv.ParseFloat(posStr, 64)
+	if err != nil {
+		return 0.0, errors.New("slider position not found, " + err.Error())
+	}
+
+	return sliderPos, nil
 }
 
 // setFirstItem looks for the first item, and sets it as s.firstItem.
@@ -994,7 +1080,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			}
 
 			// Handle dates from current year (UI doesn't show current year so we add it)
-			if m, err := regexp.MatchString(`\d{4}$`, dateStr); err == nil && !m {
+			if !yearPattern.MatchString(dateStr) {
 				dateStr += fmt.Sprintf(", %d", time.Now().Year())
 			}
 
@@ -1487,9 +1573,14 @@ func (s *Session) resync() func(context.Context) error {
 		for {
 			// find all currently visible photos
 			var nodes []*cdp.Node
-			if err := chromedp.Run(ctx,
-				chromedp.Nodes(`a[href^="./photo/"]`, &nodes, chromedp.ByQueryAll),
-			); err != nil {
+			var err error
+			if s.startNodeParent != nil {
+				err = chromedp.Nodes(`a[href^="./photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.FromNode(s.startNodeParent), chromedp.AtLeast(0)).Do(ctx)
+				s.startNodeParent = nil
+			} else {
+				err = chromedp.Nodes(`a[href^="./photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx)
+			}
+			if err != nil {
 				return err
 			}
 
@@ -1498,8 +1589,8 @@ func (s *Session) resync() func(context.Context) error {
 				break
 			}
 
-			sliderPos := 0.0
 			var sliderNodes []*cdp.Node
+			sliderPos := 0.0
 			if err := chromedp.Run(ctx,
 				chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			); err != nil {
