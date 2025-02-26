@@ -1583,6 +1583,7 @@ func (s *Session) resync() func(context.Context) error {
 
 			var sliderNodes []*cdp.Node
 			sliderPos := 0.0
+			sliderText := ""
 			if err := chromedp.Run(ctx,
 				chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 			); err != nil {
@@ -1595,6 +1596,10 @@ func (s *Session) resync() func(context.Context) error {
 					if err == nil {
 						sliderPos = pos
 					}
+				}
+				sliderText, exists = sliderNodes[0].Attribute("aria-valuetext")
+				if !exists {
+					sliderText = ""
 				}
 			}
 			if retries == 0 {
@@ -1699,7 +1704,7 @@ func (s *Session) resync() func(context.Context) error {
 			}
 
 			if timedLogReady("resyncLoop", 60*time.Second) {
-				log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%%", n, dlCnt, sliderPos*100)
+				log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
 			}
 		}
 
