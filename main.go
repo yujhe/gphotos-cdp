@@ -932,7 +932,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
-				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond)
+				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 4000*time.Millisecond)
 				if err == context.DeadlineExceeded {
 					return errors.New("more options button not visible")
 				}
@@ -947,7 +947,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for download button to appear
 				var nodesTmp []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 100*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 200*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
 						return errNoDownloadButton
 					}
@@ -968,7 +968,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			// Press down arrow until the right menu option is selected
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var nodes []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 500*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 200*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
 						return errNoDownloadButton
 					}
@@ -1637,7 +1637,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 			if retries%4 == 0 {
 				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
-				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 500*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
 					log.Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
 			}
@@ -1745,7 +1745,7 @@ func (s *Session) resync(ctx context.Context) error {
 		// scroll to the next batch by focusing the last node
 		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
 		lastNode = nodes[len(nodes)-1]
-		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 500*time.Millisecond); err != nil {
+		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 5000*time.Millisecond); err != nil {
 			return fmt.Errorf("error scrolling to next batch of items: %w", err)
 		}
 	}
