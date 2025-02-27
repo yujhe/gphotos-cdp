@@ -941,7 +941,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			}),
 
 			// Open more options dialog
-			chromedp.Evaluate(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
+			chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('[aria-label="More options"]')].pop().click()`, nil),
 			// chromedp.Sleep(50*time.Millisecond),
 
 			// Go to download button
@@ -1179,10 +1179,6 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 		if err != nil && len(s.nextDl) != 0 {
 			<-s.nextDl
 		}
-		// select {
-		// case <-s.nextDl: // clear nextDl
-		// default:
-		// }
 	}()
 
 	if err := requestDownload2(ctx, dlOriginal, hasOriginal); err != nil {
@@ -1683,7 +1679,7 @@ func (s *Session) resync(ctx context.Context) error {
 				log.Err(err).Msg(err.Error())
 				continue
 			} else {
-				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label').startsWith("Highlight video") }`, &isHighlight,
+				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label')?.startsWith("Highlight video") }`, &isHighlight,
 					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
 						return p.WithObjectID(jsNode.ObjectID)
 					},
