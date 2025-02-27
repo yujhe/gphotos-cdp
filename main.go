@@ -1740,20 +1740,22 @@ func (s *Session) resync(ctx context.Context) error {
 		}
 		log.Trace().Msgf("Finished processing %d nodes", len(nodes))
 
+		if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
+			return err
+		}
+
 		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+			log.Info().Msgf("so far: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
 		}
 
 		// scroll to the next batch by focusing the last node
 		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
 		lastNode = nodes[len(nodes)-1]
-		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 400*time.Millisecond); err != nil {
-			log.Err(err).Msgf("error scrolling to next batch of items: %v", err)
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-			// return fmt.Errorf("error scrolling to next batch of items: %w", err)
+		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
+			log.Debug().Msgf("error scrolling to next batch of items: %v", err)
 		}
 	}
-	log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
 
 	// Check if there are folders in the dl dir that were not seen in gphotos
 	entries, err := os.ReadDir(s.dlDir)
@@ -1928,19 +1930,19 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 				*jobs = (*jobs)[1:]
 			}
 
-			if timedLogReady("processJobs", 90*time.Second) {
+			if len(*jobs) > 0 && timedLogReady("processJobs", 90*time.Second) {
 				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
 			}
 
-			if len(*jobs) <= maxJobs {
+			if len(*jobs) <= maxJobs || maxJobs < 0 {
 				break
 			}
 		} else {
-			if timedLogReady("processJobs", 90*time.Second) {
-				log.Info().Msgf("%d jobs, %d still in progress", len(*jobs), dlCount)
+			if dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
+				log.Info().Msgf("%d download jobs currently in progress", dlCount)
 			}
 
-			if dlCount <= maxJobs {
+			if dlCount <= maxJobs || maxJobs < 0 {
 				break
 			}
 		}
