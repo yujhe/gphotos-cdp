@@ -553,7 +553,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 				return errors.New("failed to find date nodes class name")
 			}
 
-			bisectBounds := []float64{0.0, 2.0}
+			bisectBounds := []float64{0.0, 1.0}
 			var foundDateNode *cdp.Node
 			for range 100 {
 				scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
@@ -677,7 +677,7 @@ func (s *Session) getSliderPos(ctx context.Context) (float64, error) {
 	var sliderNodes []*cdp.Node
 
 	time.Sleep(200 * time.Millisecond)
-	if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 2*time.Second); err != nil {
+	if err := doActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 2*time.Second); err != nil {
 		return 0.0, errors.New("slider position node not found, " + err.Error())
 	}
 
@@ -932,7 +932,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
-				err := doQueryActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond)
+				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond)
 				if err == context.DeadlineExceeded {
 					return errors.New("more options button not visible")
 				}
@@ -947,7 +947,10 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for download button to appear
 				var nodesTmp []*cdp.Node
-				if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 100*time.Millisecond); err != nil && err != context.DeadlineExceeded {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 100*time.Millisecond); err != nil {
+					if err == context.DeadlineExceeded {
+						return errNoDownloadButton
+					}
 					return err
 				}
 
@@ -965,7 +968,7 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			// Press down arrow until the right menu option is selected
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var nodes []*cdp.Node
-				if err := doQueryActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 500*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 500*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
 						return errNoDownloadButton
 					}
@@ -998,17 +1001,18 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 		)
 		muTabActivity.Unlock()
 
-		if err == nil || i > 5 {
+		if err == nil {
 			break
-		}
-
-		if i <= 5 && (err == errNoDownloadButton || err == errCouldNotPressDownloadButton) {
-			log.Debug().Msgf("Trying to request download again after error: %v", err)
-		} else if err != nil {
+		} else if i > 5 {
+			log.Debug().Msgf("Trying to request download with method 2 %d times, giving up now", i)
+			break
+		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton {
+			log.Debug().Msgf("Trying to request download with method 2 again after error: %v", err)
+		} else {
 			return err
 		}
 
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		i++
 	}
 
@@ -1106,18 +1110,18 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 				// Click on info button
 				log.Debug().Msg("Date not visible, clicking on i button")
-				if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('[aria-label="Open info"]')].pop()?.click()`, nil).Do(ctx); err != nil {
+				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('[aria-label="Open info"]')].pop()?.click()`, nil)); err != nil {
 					return err
 				}
 
 				select {
 				case <-timeout1.C:
-					if err := navWithAction(ctx, chromedp.Reload()); err != nil {
+					if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
 						return err
 					}
 				case <-timeout2.C:
 					return fmt.Errorf("timeout waiting for photo info")
-				case <-time.After(time.Duration(100+n*40) * time.Millisecond):
+				case <-time.After(time.Duration(400+n*50) * time.Millisecond):
 				}
 			}
 			return nil
@@ -1154,7 +1158,7 @@ var dlLock sync.Mutex = sync.Mutex{}
 // download starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s *Session) download(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (NewDownload, chan bool, error) {
+func (s *Session) download(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (newDl NewDownload, progress chan bool, err error) {
 	log.Trace().Msgf("entering download() for %v, dlOriginal=%v", location, dlOriginal)
 
 	cl := GetContextLocks(ctx)
@@ -1169,6 +1173,16 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 	dlStarted := make(chan NewDownload, 1)
 	dlProgress := make(chan bool, 1)
 	s.nextDl <- DownloadChannels{dlStarted, dlProgress}
+
+	defer func() {
+		if err != nil && len(s.nextDl) != 0 {
+			<-s.nextDl
+		}
+		// select {
+		// case <-s.nextDl: // clear nextDl
+		// default:
+		// }
+	}()
 
 	if err := requestDownload2(ctx, dlOriginal, hasOriginal); err != nil {
 		if dlOriginal || (err != errCouldNotPressDownloadButton && err != errNoDownloadButton) {
@@ -1226,10 +1240,6 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 		}
 		if isStillProcessing {
 			log.Warn().Msg("Received 'Video is still processing' error")
-			select {
-			case <-s.nextDl: // clear nextDl
-			default:
-			}
 			return NewDownload{}, nil, errStillProcessing
 		}
 
@@ -1283,7 +1293,7 @@ func (s *Session) makeOutDir(location string) (string, error) {
 	return newDir, nil
 }
 
-// dlAndProcess creates a directory in s.dlDir named of the item ID found in
+// processDownload creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory
 func (s *Session) processDownload(dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool, location string, photoDataChan chan PhotoData) {
 	log.Trace().Msgf("entering processDownload for %v", dl.GUID)
@@ -1365,9 +1375,10 @@ progressLoop:
 
 // dlAndProcess starts a download then sends it to processDownload for processing
 func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, location string) {
-	log.Trace().Msgf("entering dlAndProcess for %v", location)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	jobs := [](chan error){}
+	log.Trace().Msgf("entering dlAndProcess for %v", location)
 
 	photoDataChan := make(chan PhotoData, 2)
 	go func() {
@@ -1383,7 +1394,6 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 	}()
 
 	errChan1 := make(chan error, 1)
-	jobs = append(jobs, errChan1)
 	hasOriginalChan := make(chan bool, 1)
 
 	go func() {
@@ -1401,7 +1411,6 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 	}()
 
 	errChan2 := make(chan error, 1)
-	jobs = append(jobs, errChan2)
 
 	go func() {
 		if <-hasOriginalChan {
@@ -1418,42 +1427,44 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		}
 	}()
 
-	for {
-		i := 0
+	jobsRemaining := 2
+
+	go func() {
 		for {
 			select {
-			case err := <-jobs[i]:
-				log.Trace().Msgf("dlAndProcess: job result: %s for %s", err, location)
-				if err != nil {
-					// Error downloading original or generated image, remove files already downloaded
-					outDir, errTmp := s.makeOutDir(location)
-					if errTmp != nil {
-						log.Err(errTmp).Msg(errTmp.Error())
-					} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
-						log.Err(errTmp).Msg(errTmp.Error())
-					}
-					outerErrChan <- err
-					return
-				} else {
-					jobs[i] = jobs[0]
-					jobs = jobs[1:]
-				}
-			default:
-				i++
-			}
-			if i >= len(jobs) {
-				break
+			case <-ctx.Done():
+				return
+			case <-time.After(60 * time.Second):
+				log.Trace().Msgf("dlAndProcess: waiting for %d jobs to finish for %s", jobsRemaining, location)
 			}
 		}
-		if len(jobs) == 0 {
+	}()
+
+	for {
+		var err error
+		select {
+		case err = <-errChan1:
+		case err = <-errChan2:
+		case <-ctx.Done():
+			return
+		}
+		log.Trace().Msgf("dlAndProcess: job result: %s for %s", err, location)
+		jobsRemaining--
+		if err != nil {
+			// Error downloading original or generated image, remove files already downloaded
+			outDir, errTmp := s.makeOutDir(location)
+			if errTmp != nil {
+				log.Err(errTmp).Msg(errTmp.Error())
+			} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
+				log.Err(errTmp).Msg(errTmp.Error())
+			}
+			outerErrChan <- err
+		}
+		if jobsRemaining == 0 {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
-
-		if timedLogReady("dlAndProcessFinalLoop"+location, 60*time.Second) {
-			log.Trace().Msgf("dlAndProcess: waiting for %d jobs to finish for %s", len(jobs), location)
-		}
 	}
+
 	outerErrChan <- nil
 }
 
@@ -1624,10 +1635,10 @@ func (s *Session) resync(ctx context.Context) error {
 				break
 			}
 
-			if retries%30 == 0 {
+			if retries%4 == 0 {
 				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
-				if err := doQueryActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 250*time.Millisecond); err != nil {
-					log.Err(err).Msgf("Error scrolling page down, %v", err)
+				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 500*time.Millisecond); err != nil {
+					log.Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
 			}
 
@@ -1665,9 +1676,9 @@ func (s *Session) resync(ctx context.Context) error {
 			log.Trace().Msgf("node for photo %v has attributes %v", imageId, node.Attributes)
 
 			var isHighlight bool
-			if err := chromedp.EvaluateAsDevTools(`
+			if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`
 					!!document.querySelector('a[href*="`+imageId+`"][aria-label^="Highlight video"]')
-					`, &isHighlight).Do(ctx); err != nil {
+					`, &isHighlight)); err != nil {
 				log.Err(err).Msg(err.Error())
 			}
 
@@ -1703,10 +1714,10 @@ func (s *Session) resync(ctx context.Context) error {
 				}
 				time.Sleep(400 * time.Millisecond)
 
-				if err := chromedp.EvaluateAsDevTools(`
+				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`
 						!![...document.querySelectorAll("div")]
 							.filter(el => el.textContent == "Highlight video" && getComputedStyle(el.parentNode).display != "none").length
-						`, &isHighlight).Do(ctx); err != nil {
+						`, &isHighlight)); err != nil {
 					log.Err(err).Msg(err.Error())
 				}
 
@@ -1734,8 +1745,8 @@ func (s *Session) resync(ctx context.Context) error {
 		// scroll to the next batch by focusing the last node
 		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
 		lastNode = nodes[len(nodes)-1]
-		if err := doQueryActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 250*time.Millisecond); err != nil {
-			return err
+		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 500*time.Millisecond); err != nil {
+			return fmt.Errorf("error scrolling to next batch of items: %w", err)
 		}
 	}
 	log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
@@ -2052,7 +2063,7 @@ func doFileDateUpdate(date time.Time, filePaths []string) error {
 	return nil
 }
 
-func doQueryActionWithTimeout(ctx context.Context, action chromedp.Action, timeout time.Duration) error {
+func doActionWithTimeout(ctx context.Context, action chromedp.Action, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := action.Do(ctx); err != nil {
