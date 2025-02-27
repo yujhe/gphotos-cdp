@@ -47,6 +47,7 @@ import (
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
+	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
@@ -1677,11 +1678,18 @@ func (s *Session) resync(ctx context.Context) error {
 
 			log.Trace().Msgf("node for photo %v has attributes %v", imageId, node.Attributes)
 
-			var isHighlight bool
-			if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`
-					!!document.querySelector('a[href*="`+imageId+`"][aria-label^="Highlight video"]')
-					`, &isHighlight)); err != nil {
+			isHighlight := false
+			if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
 				log.Err(err).Msg(err.Error())
+				continue
+			} else {
+				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`!!this.getAttribute('aria-label').startsWith("Highlight video")`, &isHighlight,
+					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
+						return p.WithObjectID(jsNode.ObjectID)
+					},
+				)); err != nil {
+					log.Err(err).Msg(err.Error())
+				}
 			}
 
 			if isHighlight {
