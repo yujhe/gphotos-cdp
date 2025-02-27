@@ -1637,6 +1637,8 @@ func (s *Session) resync(ctx context.Context) error {
 
 			if retries%4 == 0 {
 				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
+				c := chromedp.FromContext(ctx)
+				target.ActivateTarget(c.Target.TargetID).Do(ctx)
 				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
 					log.Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
@@ -1745,7 +1747,7 @@ func (s *Session) resync(ctx context.Context) error {
 		// scroll to the next batch by focusing the last node
 		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
 		lastNode = nodes[len(nodes)-1]
-		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 5000*time.Millisecond); err != nil {
+		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 10000*time.Millisecond); err != nil {
 			return fmt.Errorf("error scrolling to next batch of items: %w", err)
 		}
 	}
