@@ -1683,12 +1683,22 @@ func (s *Session) resync(ctx context.Context) error {
 				log.Err(err).Msg(err.Error())
 				continue
 			} else {
-				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`!!this.getAttribute('aria-label').startsWith("Highlight video")`, &isHighlight,
+				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label').startsWith("Highlight video")`, &isHighlight,
 					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
 						return p.WithObjectID(jsNode.ObjectID)
 					},
 				)); err != nil {
 					log.Err(err).Msg(err.Error())
+				}
+				if isHighlight {
+					log.Trace().Msg("found highlight video using CallFunctionOn")
+				}
+			}
+
+			if !isHighlight {
+				if strings.HasPrefix(node.AttributeValue("aria-label"), "Highlight video") {
+					log.Trace().Msg("found video using node.AttributeValue")
+					isHighlight = true
 				}
 			}
 
@@ -1753,7 +1763,7 @@ func (s *Session) resync(ctx context.Context) error {
 		}
 
 		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("so far: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+			log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
 		}
 
 		// scroll to the next batch by focusing the last node
