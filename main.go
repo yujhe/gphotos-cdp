@@ -1683,21 +1683,35 @@ func (s *Session) resync(ctx context.Context) error {
 				log.Err(err).Msg(err.Error())
 				continue
 			} else {
-				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label').startsWith("Highlight video")`, &isHighlight,
+				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label').startsWith("Highlight video") }`, &isHighlight,
 					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
 						return p.WithObjectID(jsNode.ObjectID)
 					},
 				)); err != nil {
-					log.Err(err).Msg(err.Error())
+					log.Err(err).Msgf("error finding highlight video using CallFunctionOn, %s", err.Error())
 				}
 				if isHighlight {
 					log.Trace().Msg("found highlight video using CallFunctionOn")
+				}
+				if !isHighlight {
+					var html string
+					if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.outerHTML }`, &html,
+						func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
+							return p.WithObjectID(jsNode.ObjectID)
+						},
+					)); err != nil {
+						log.Err(err).Msgf("error finding highlight video using outerHTML, %s", err.Error())
+					}
+					if strings.Contains(html, "Highlight video") {
+						log.Trace().Msg("found highlight video using OuterHTML")
+						isHighlight = true
+					}
 				}
 			}
 
 			if !isHighlight {
 				if strings.HasPrefix(node.AttributeValue("aria-label"), "Highlight video") {
-					log.Trace().Msg("found video using node.AttributeValue")
+					log.Trace().Msg("found highlight video using node.AttributeValue")
 					isHighlight = true
 				}
 			}
