@@ -1747,8 +1747,10 @@ func (s *Session) resync(ctx context.Context) error {
 		// scroll to the next batch by focusing the last node
 		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
 		lastNode = nodes[len(nodes)-1]
-		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 10000*time.Millisecond); err != nil {
-			return fmt.Errorf("error scrolling to next batch of items: %w", err)
+		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 400*time.Millisecond); err != nil {
+			log.Err(err).Msgf("error scrolling to next batch of items: %v", err)
+			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+			// return fmt.Errorf("error scrolling to next batch of items: %w", err)
 		}
 	}
 	log.Info().Msgf("in total: resynced %v items, downloaded %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
