@@ -561,10 +561,10 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			}
 
 			bisectBounds := []float64{0.0, 1.0}
+			scrollPos := 0.0
 			var foundDateNode *cdp.Node
 			for range 100 {
 				scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
-				scrollPos := 0.0
 				log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
 				for range 20 {
 					if err := chromedp.Evaluate(fmt.Sprintf(`
@@ -608,7 +608,8 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 				var closestDateNode *cdp.Node
 				var closestDateDiff float64
-				for _, n := range dateNodes {
+				var knownFirstOccurance bool
+				for i, n := range dateNodes {
 					if n.NodeName != "DIV" || n.ChildNodeCount == 0 {
 						continue
 					}
@@ -639,23 +640,27 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 					if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
 						closestDateNode = n
 						closestDateDiff = diff
+						knownFirstOccurance = i > 0
 					}
 				}
 
 				if closestDateDiff == 0 && closestDateNode != nil {
-					foundDateNode = closestDateNode
-					log.Debug().Msgf("final scroll position: %.2f%%", scrollTarget*100)
-					break
-				}
-
-				if closestDateDiff > 0 {
-					bisectBounds[0] = scrollTarget
+					if knownFirstOccurance {
+						foundDateNode = closestDateNode
+						break
+					} else {
+						bisectBounds[1] = scrollPos
+					}
+				} else if closestDateDiff > 0 {
+					bisectBounds[0] = scrollPos
 				} else if closestDateDiff < 0 {
-					bisectBounds[1] = scrollTarget
+					bisectBounds[1] = scrollPos
 				}
 
 				time.Sleep(50 * time.Millisecond)
 			}
+
+			log.Debug().Msgf("final scroll position: %.2f%%", scrollPos*100)
 
 			if foundDateNode == nil {
 				return errors.New("could not find -start date")
