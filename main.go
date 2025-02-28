@@ -875,11 +875,11 @@ func markDone(dldir, location string) error {
 
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
-func requestDownload1(ctx context.Context) error {
+func requestDownload1(ctx context.Context, location string) error {
 	muTabActivity.Lock()
 	defer muTabActivity.Unlock()
 
-	log.Debug().Msg("Requesting download (method 1)")
+	log.Debug().Msgf("Requesting download (method 1) for %v", location)
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
 		return err
 	}
@@ -919,8 +919,8 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
-func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) error {
-	log.Debug().Str("original", fmt.Sprintf("%v", original)).Msg("Requesting download (method 2)")
+func requestDownload2(ctx context.Context, location string, original bool, hasOriginal *bool) error {
+	log.Debug().Str("original", fmt.Sprintf("%v", original)).Msgf("Requesting download (method 2) for %s", location)
 	originalSelector := `[aria-label="Download original"]`
 	var selector string
 	if original {
@@ -932,10 +932,11 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 	i := 0
 	for {
 		muTabActivity.Lock()
+		ctxTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 		c := chromedp.FromContext(ctx)
 		target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
-		err := chromedp.Run(ctx,
+		err := chromedp.Run(ctxTimeout,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
@@ -1006,15 +1007,16 @@ func requestDownload2(ctx context.Context, original bool, hasOriginal *bool) err
 			// Activate the selected action and wait a bit before continuing
 			chromedp.KeyEvent(kb.Enter),
 		)
+		cancel()
 		muTabActivity.Unlock()
 
 		if err == nil {
 			break
 		} else if i > 5 {
-			log.Debug().Msgf("Trying to request download with method 2 %d times, giving up now", i)
+			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 %d times, giving up now", i)
 			break
 		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton {
-			log.Debug().Msgf("Trying to request download with method 2 again after error: %v", err)
+			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 again after error: %v", err)
 		} else {
 			return err
 		}
@@ -1182,16 +1184,19 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 	s.nextDl <- DownloadChannels{dlStarted, dlProgress}
 
 	defer func() {
-		if err != nil && len(s.nextDl) != 0 {
-			<-s.nextDl
+		if err != nil {
+			select {
+			case <-s.nextDl:
+			default:
+			}
 		}
 	}()
 
-	if err := requestDownload2(ctx, dlOriginal, hasOriginal); err != nil {
+	if err := requestDownload2(ctx, location, dlOriginal, hasOriginal); err != nil {
 		if dlOriginal || (err != errCouldNotPressDownloadButton && err != errNoDownloadButton) {
 			return NewDownload{}, nil, err
 		} else if !dlOriginal {
-			requestDownload1(ctx)
+			requestDownload1(ctx, location)
 		}
 	}
 
@@ -1205,6 +1210,7 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
+		log.Trace().Msgf("Checking for still processing dialog")
 		var nodes []*cdp.Node
 		if err := chromedp.Nodes(`[aria-label^="Video is still processing"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
 			return NewDownload{}, nil, err
@@ -1220,15 +1226,18 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 				return NewDownload{}, nil, err
 			}
 		} else {
+			log.Trace().Msgf("Checking for still processing status (at bottom of screen)")
 			// This check only works for requestDownload1 method (not requestDownload2)
 			if err := chromedp.Evaluate("document.body.textContent.indexOf('Video is still processing &amp; can be downloaded later') != -1", &isStillProcessing).Do(ctx); err != nil {
 				return NewDownload{}, nil, err
 			}
 			if isStillProcessing {
+				log.Debug().Msg("Found still processing status at bottom of screen, waiting for it to disappear before continuing")
 				time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
 			}
 			if !isStillProcessing {
 				// Sometimes Google returns a different error, check for that too
+				log.Trace().Msg("Checking for loading error page")
 				if err := chromedp.Evaluate("document.body.textContent.indexOf('No webpage was found for the web address:') != -1", &isStillProcessing).Do(ctx); err != nil {
 					return NewDownload{}, nil, err
 				}
@@ -1248,7 +1257,7 @@ func (s *Session) download(ctx context.Context, location string, dlOriginal bool
 
 		select {
 		case <-timeout1.C:
-			if err := requestDownload1(ctx); err != nil {
+			if err := requestDownload1(ctx, location); err != nil {
 				return NewDownload{}, nil, err
 			}
 		case <-timeout2.C:
