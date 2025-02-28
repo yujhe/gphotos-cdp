@@ -532,7 +532,8 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 			t, err := time.Parse("Jan 2, 2006", *startFlag)
 			if err != nil {
-				return errors.New("startFlag must be of format 'Jan 2, 2006'")
+				log.Err(err).Msgf("error parsing -start argument '%s': %s", *startFlag, err.Error())
+				return errors.New("-start argument must be of format 'Jan 2, 2006'")
 			}
 			startDate := t
 
