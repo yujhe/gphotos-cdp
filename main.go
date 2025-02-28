@@ -60,7 +60,7 @@ var (
 	nItemsFlag     = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag        = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	dlDirFlag      = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag      = flag.String("start", "", "scroll to this position (in percent) or in legacy mode start at this photo URL")
+	startFlag      = flag.String("start", "", "scroll to this date (YYYY-MM-DD) or in legacy mode start at this photo URL")
 	runFlag        = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag    = flag.Bool("v", false, "be verbose")
 	fileDateFlag   = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
@@ -530,10 +530,10 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			// 	return err
 			// }
 
-			t, err := time.Parse("Jan 2, 2006", *startFlag)
+			t, err := time.Parse("2006-01-02", *startFlag)
 			if err != nil {
 				log.Err(err).Msgf("error parsing -start argument '%s': %s", *startFlag, err.Error())
-				return errors.New("-start argument must be of format 'Jan 2, 2006'")
+				return errors.New("-start argument must be of format 'YYYY-MM-DD'")
 			}
 			startDate := t
 
