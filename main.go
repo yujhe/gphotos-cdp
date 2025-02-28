@@ -526,10 +526,6 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 		if *startFlag != "" {
 			// This is only used to ensure page is loaded
-			// if err := s.setFirstItem(ctx); err != nil {
-			// 	return err
-			// }
-
 			t, err := time.Parse("2006-01-02", *startFlag)
 			if err != nil {
 				log.Err(err).Msgf("error parsing -start argument '%s': %s", *startFlag, err.Error())
@@ -1603,7 +1599,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 		var nodes []*cdp.Node
 		if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, opts...).Do(ctx); err != nil {
-			return err
+			return fmt.Errorf("error finding photo nodes, %w", err)
 		}
 
 		if n == 0 && len(nodes) == 0 {
@@ -1617,7 +1613,7 @@ func (s *Session) resync(ctx context.Context) error {
 		if err := chromedp.Run(ctx,
 			chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
 		); err != nil {
-			return err
+			return fmt.Errorf("error finding slider node, %w", err)
 		}
 		if len(sliderNodes) > 0 {
 			posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
@@ -1696,8 +1692,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 			isHighlight := false
 			if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
-				log.Err(err).Msg(err.Error())
-				continue
+				log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
 			} else {
 				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label')?.startsWith("Highlight video") }`, &isHighlight,
 					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
