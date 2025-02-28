@@ -267,9 +267,14 @@ func NewSession() (*Session, error) {
 	if err := os.MkdirAll(dlDirTmp, 0700); err != nil {
 		return nil, err
 	}
-	lastDone, err := getLastDone(dlDir)
-	if err != nil {
-		return nil, err
+
+	lastDone := ""
+	if *legacyModeFlag {
+		var err error
+		lastDone, err = getLastDone(dlDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	s := &Session{
 		profileDir: dir,
