@@ -138,7 +138,7 @@ func main() {
 	if *toFlag != "" {
 		var err error
 		toDate, err = time.Parse(time.DateOnly, *toFlag)
-		toDate.Add(time.Hour * 24)
+		toDate = toDate.Add(time.Hour * 24)
 		if err != nil {
 			log.Fatal().Msgf("could not parse -to argument %s, must be YYYY-MM-DD", *toFlag)
 			return
