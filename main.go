@@ -60,7 +60,10 @@ var (
 	nItemsFlag     = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag        = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	dlDirFlag      = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag      = flag.String("start", "", "scroll to this date (YYYY-MM-DD) or in legacy mode start at this photo URL")
+	startFlag      = flag.String("start", "", "start at this photo URL/ID (legacy mode only)")
+	endFlag        = flag.String("end", "", "end at this photo URL/ID (legacy mode only)")
+	fromFlag       = flag.String("from", "", "earliest date to sync (YYYY-MM-DD) (not supported in legacy mode)")
+	toFlag         = flag.String("to", "", "latest date to sync (YYYY-MM-DD) (not supported in legacy mode)")
 	runFlag        = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag    = flag.Bool("v", false, "be verbose")
 	fileDateFlag   = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
@@ -70,7 +73,7 @@ var (
 	fixFlag        = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size, then update date if wrong (legacy mode only)")
 	lastDoneFlag   = flag.String("lastdone", ".lastdone", "name of file to store last done URL in relative to dlDir (legacy mode only)")
 	workersFlag    = flag.Int("workers", 6, "number of concurrent downloads allowed")
-	albumIdFlag    = flag.String("album", "", "ID of album to download, has no effect if lastdone file is populated")
+	albumIdFlag    = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	legacyModeFlag = flag.Bool("legacy", false, "use the legacy download flow, instead of the new one that is much faster at skipping existing files")
 )
 
@@ -80,6 +83,10 @@ var errRetry = errors.New("retry")
 var errNoDownloadButton = errors.New("no download button found")
 var errCouldNotPressDownloadButton = errors.New("could not press download button")
 var originalSuffix = "_original"
+var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
+var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
+var fromDate time.Time
+var toDate time.Time
 
 var yearPattern = regexp.MustCompile(`\d{4}$`)
 
@@ -101,7 +108,7 @@ func main() {
 	if !*jsonLogFlag {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 	}
-	if !*devFlag && *startFlag != "" {
+	if !*devFlag {
 		log.Fatal().Msg("-start only allowed in dev mode")
 	}
 	if !*devFlag && *headlessFlag {
@@ -117,6 +124,24 @@ func main() {
 	if os.Getenv("XDG_CACHE_HOME") == "" {
 		if err := os.Setenv("XDG_CACHE_HOME", filepath.Join(os.TempDir(), ".chromium")); err != nil {
 			log.Fatal().Msgf("err %v", err)
+		}
+	}
+
+	if *fromFlag != "" {
+		var err error
+		fromDate, err = time.Parse(time.DateOnly, *fromFlag)
+		if err != nil {
+			log.Fatal().Msgf("could not parse -from argument %s, must be YYYY-MM-DD", *fromFlag)
+			return
+		}
+	}
+	if *toFlag != "" {
+		var err error
+		toDate, err = time.Parse(time.DateOnly, *toFlag)
+		toDate.Add(time.Hour * 24)
+		if err != nil {
+			log.Fatal().Msgf("could not parse -to argument %s, must be YYYY-MM-DD", *toFlag)
+			return
 		}
 	}
 
@@ -464,8 +489,14 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		}
 
 		if *startFlag != "" {
+			var url string
+			if strings.Contains(*startFlag, "/") {
+				url = *startFlag
+			} else {
+				url = "https://photos.google.com" + s.photoRelPath + "/" + *startFlag
+			}
 			// TODO(mpl): use RunResponse
-			chromedp.Navigate(*startFlag).Do(ctx)
+			chromedp.Navigate(url).Do(ctx)
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 			return nil
 		}
@@ -524,12 +555,11 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 		}
 
-		if *startFlag != "" {
-			// This is only used to ensure page is loaded
-			t, err := time.Parse("2006-01-02", *startFlag)
+		if *toFlag != "" {
+			t, err := time.Parse("2006-01-02", *toFlag)
 			if err != nil {
-				log.Err(err).Msgf("error parsing -start argument '%s': %s", *startFlag, err.Error())
-				return errors.New("-start argument must be of format 'YYYY-MM-DD'")
+				log.Err(err).Msgf("error parsing -to argument '%s': %s", *toFlag, err.Error())
+				return errors.New("-to argument must be of format 'YYYY-MM-DD'")
 			}
 			startDate := t
 
@@ -1402,6 +1432,12 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		if err != nil {
 			outerErrChan <- err
 		} else {
+			if fromDate != (time.Time{}) && data.date.Before(fromDate) {
+				outerErrChan <- errPhotoTakenBeforeFromDate
+			}
+			if toDate != (time.Time{}) && data.date.After(toDate) {
+				outerErrChan <- errPhotoTakenAfterToDate
+			}
 			// we need two of these if we are downloading an original
 			photoDataChan <- data
 			photoDataChan <- data
@@ -1780,6 +1816,10 @@ func (s *Session) resync(ctx context.Context) error {
 			dlCnt++
 
 			if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
+				if err == errPhotoTakenBeforeFromDate {
+					log.Info().Msg("Found photo taken before -from date, stopping sync here")
+					break
+				}
 				return err
 			}
 		}
@@ -1903,6 +1943,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 
+			if location == *endFlag || imageId == *endFlag {
+				log.Info().Msgf("reached end at %v", location)
+				break
+			}
+
 			var morePhotosAvailable bool
 			if err := chromedp.Evaluate(`!![...document.querySelectorAll('[aria-label="View previous photo"]')].slice(-1).map(x => window.getComputedStyle(x).display !== 'none')[0]`, &morePhotosAvailable).Do(ctx); err != nil {
 				return fmt.Errorf("error checking for nav left button: %v", err)
@@ -1952,12 +1997,20 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 	for {
 		dlCount := 0
 		for i := range *jobs {
+			if (*jobs)[i].errChan == nil {
+				continue
+			}
+
 			select {
 			case err := <-(*jobs)[i].errChan:
 				(*jobs)[i].errChan = nil
 				if err == errStillProcessing {
 					// Old highlight videos are no longer available
 					log.Info().Msg("Skipping generated highlight video that Google seems to have lost")
+				} else if err == errPhotoTakenAfterToDate {
+					log.Warn().Msg("Skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
+				} else if err == errPhotoTakenBeforeFromDate && maxJobs == 0 {
+					log.Info().Msgf("Skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 				} else if err != nil {
 					return err
 				}
