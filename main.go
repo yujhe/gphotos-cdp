@@ -1419,12 +1419,12 @@ progressLoop:
 	}
 }
 
-// dlAndProcess starts a download then sends it to processDownload for processing
-func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, location string) {
+// downloadAndProcessItem starts a download then sends it to processDownload for processing
+func (s *Session) downloadAndProcessItem(ctx context.Context, outerErrChan chan error, location string) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	log.Trace().Msgf("entering dlAndProcess for %v", location)
+	log.Trace().Msgf("entering downloadAndProcessItem() for %v", location)
 
 	photoDataChan := make(chan PhotoData, 2)
 	go func() {
@@ -1487,7 +1487,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 			case <-ctx.Done():
 				return
 			case <-time.After(60 * time.Second):
-				log.Trace().Msgf("dlAndProcess: waiting for %d jobs to finish for %s", jobsRemaining, location)
+				log.Trace().Msgf("downloadAndProcessItem(): waiting for %d jobs to finish for %s", jobsRemaining, location)
 			}
 		}
 	}()
@@ -1500,7 +1500,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 		case <-ctx.Done():
 			return
 		}
-		log.Trace().Msgf("dlAndProcess: job result: %s for %s", err, location)
+		log.Trace().Msgf("downloadAndProcessItem(): job result: %s for %s", err, location)
 		jobsRemaining--
 		if err != nil {
 			// Error downloading original or generated image, remove files already downloaded
@@ -1811,7 +1811,7 @@ func (s *Session) resync(ctx context.Context) error {
 					return
 				}
 
-				s.dlAndProcess(ctx, dlErrChan, location)
+				s.downloadAndProcessItem(ctx, dlErrChan, location)
 			}()
 			asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 			dlCnt++
@@ -1936,7 +1936,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if len(entries) == 0 {
 				// Local dir doesn't exist or is empty, continue downloading
 				dlErrChan := make(chan error, 1)
-				s.dlAndProcess(ctx, dlErrChan, location)
+				s.downloadAndProcessItem(ctx, dlErrChan, location)
 				asyncJobs = append(asyncJobs, Job{location, dlErrChan})
 			} else if *fixFlag {
 				var files []fs.FileInfo
