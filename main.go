@@ -70,6 +70,7 @@ var (
 	headlessFlag   = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 	jsonLogFlag    = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag   = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	removedFlag    = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos (not supported in legacy mode)")
 	fixFlag        = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size, then update date if wrong (legacy mode only)")
 	lastDoneFlag   = flag.String("lastdone", ".lastdone", "name of file to store last done URL in relative to dlDir (legacy mode only)")
 	workersFlag    = flag.Int("workers", 6, "number of concurrent downloads allowed")
@@ -1854,19 +1855,37 @@ func (s *Session) resync(ctx context.Context) error {
 		photoIdsMap[id] = struct{}{}
 	}
 
-	deleted := []string{}
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != "tmp" {
-			// Check if the folder name is in the map of photo IDs
-			if _, exists := photoIdsMap[entry.Name()]; !exists {
-				deleted = append(deleted, entry.Name())
+	if *removedFlag {
+		log.Info().Msg("Checking for removed files")
+		deleted := []string{}
+		for _, entry := range entries {
+			if entry.IsDir() && entry.Name() != "tmp" {
+				// Check if the folder name is in the map of photo IDs
+				if _, exists := photoIdsMap[entry.Name()]; !exists {
+					deleted = append(deleted, entry.Name())
+				}
 			}
 		}
-	}
-	if len(deleted) > 0 {
-		log.Info().Msgf("Folders found for %d local photos that don't exist on google photos, list saved to .removed", len(deleted))
-		if err := os.WriteFile(path.Join(s.dlDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
-			return err
+		for i, imageId := range deleted {
+			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("http://photos.google.com/photo/"+imageId))
+			if err != nil {
+				log.Err(err).Msgf("error checking for removed file %s: %s", imageId, err.Error())
+				return nil
+			}
+			if resp.Status == http.StatusOK {
+				log.Info().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
+				deleted = append(deleted[:i], deleted[i+1:]...)
+			} else if resp.Status == http.StatusNotFound {
+				log.Trace().Msgf("photo %s was not in original sync, but is in local folder, it was probably deleted", imageId)
+			} else {
+				return fmt.Errorf("unexpected response for %s: %v", imageId, resp.Status)
+			}
+		}
+		if len(deleted) > 0 {
+			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos, list saved to .removed", len(deleted))
+			if err := os.WriteFile(path.Join(s.dlDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
+				return err
+			}
 		}
 	}
 
