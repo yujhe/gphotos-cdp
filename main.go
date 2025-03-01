@@ -1866,6 +1866,9 @@ func (s *Session) resync(ctx context.Context) error {
 				}
 			}
 		}
+		if len(deleted) > 0 {
+			log.Info().Msgf("Folders found for %d local photos that were not found in this sync. Checking google photos to confirm they are not there", len(deleted))
+		}
 		for i, imageId := range deleted {
 			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("http://photos.google.com/photo/"+imageId))
 			if err != nil {
