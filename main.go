@@ -1198,11 +1198,11 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 var dlLock sync.Mutex = sync.Mutex{}
 
-// download starts the download of the currently viewed item, and on successful
+// startDownload starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s *Session) download(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (newDl NewDownload, progress chan bool, err error) {
-	log.Trace().Msgf("entering download() for %v, dlOriginal=%v", location, dlOriginal)
+func (s *Session) startDownload(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (newDl NewDownload, progress chan bool, err error) {
+	log.Trace().Msgf("entering startDownload() for %v, dlOriginal=%v", location, dlOriginal)
 
 	cl := GetContextLocks(ctx)
 
@@ -1450,7 +1450,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 
 	go func() {
 		hasOriginal := false
-		dl, dlProgress, err := s.download(ctx, location, false, &hasOriginal)
+		dl, dlProgress, err := s.startDownload(ctx, location, false, &hasOriginal)
 		if err != nil {
 			log.Trace().Msgf("download of %v failed: %v", location, err)
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
@@ -1466,7 +1466,7 @@ func (s *Session) dlAndProcess(ctx context.Context, outerErrChan chan error, loc
 
 	go func() {
 		if <-hasOriginalChan {
-			dl, dlProgress, err := s.download(ctx, location, true, nil)
+			dl, dlProgress, err := s.startDownload(ctx, location, true, nil)
 			if err != nil {
 				log.Trace().Msgf("download of %v failed: %v", location, err)
 				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
