@@ -1018,8 +1018,10 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			break
 		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton {
 			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 again after error: %v", err)
+		} else if err == context.DeadlineExceeded {
+			log.Error().Str("location", location).Msgf("context.DeadlineExceeded when requesting download with method 2, trying again")
 		} else {
-			return err
+			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
 		}
 
 		time.Sleep(100 * time.Millisecond)
