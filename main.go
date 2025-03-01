@@ -1808,11 +1808,17 @@ func (s *Session) resync(ctx context.Context) error {
 		return err
 	}
 
+	// Create a map for O(1) lookups instead of using contains() which is O(n)
+	photoIdsMap := make(map[string]struct{}, len(photoIds))
+	for _, id := range photoIds {
+		photoIdsMap[id] = struct{}{}
+	}
+
 	deleted := []string{}
 	for _, entry := range entries {
 		if entry.IsDir() && entry.Name() != "tmp" {
-			// Check if the folder name is in the list of photo IDs
-			if !contains(photoIds, entry.Name()) {
+			// Check if the folder name is in the map of photo IDs
+			if _, exists := photoIdsMap[entry.Name()]; !exists {
 				deleted = append(deleted, entry.Name())
 			}
 		}
@@ -1992,13 +1998,12 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			}
 		}
 
-		if n > 50000 {
-			return errors.New("waited too long for jobs to exit, exiting")
-		}
-
 		// Let's wait for some downloads to finish before starting more
 		time.Sleep(100 * time.Millisecond)
 		n++
+		if n > 50000 {
+			return errors.New("waited too long for jobs to exit, exiting")
+		}
 	}
 	return nil
 }
