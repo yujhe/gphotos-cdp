@@ -77,6 +77,7 @@ var (
 	lastDoneFlag   = flag.String("lastdone", ".lastdone", "name of file to store last done URL in relative to dlDir (legacy mode only)")
 	workersFlag    = flag.Int("workers", 6, "number of concurrent downloads allowed")
 	albumIdFlag    = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
+	albumTypeFlag  = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
 	legacyModeFlag = flag.Bool("legacy", false, "use the legacy download flow, instead of the new one that is much faster at skipping existing files")
 )
 
@@ -482,7 +483,11 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
 	if *albumIdFlag != "" {
-		s.photoRelPath = "/album/" + *albumIdFlag
+		if strings.Contains(*albumIdFlag, "/") {
+			s.photoRelPath = "/" + *albumIdFlag
+		} else {
+			s.photoRelPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
+		}
 	}
 
 	// This is only used to ensure page is loaded
