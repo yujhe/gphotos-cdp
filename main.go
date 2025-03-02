@@ -52,6 +52,8 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
 
+	"slices"
+
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -1869,7 +1871,9 @@ func (s *Session) resync(ctx context.Context) error {
 		if len(deleted) > 0 {
 			log.Info().Msgf("Folders found for %d local photos that were not found in this sync. Checking google photos to confirm they are not there", len(deleted))
 		}
-		for i, imageId := range deleted {
+		i := 0
+		for i < len(deleted) {
+			imageId := deleted[i]
 			var resp int
 			if err := chromedp.Run(ctx,
 				chromedp.Evaluate(`new Promise((res) => fetch('https://photos.google.com`+s.photoRelPath+`/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
@@ -1882,12 +1886,14 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 			if resp == http.StatusOK {
 				log.Debug().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
-				deleted = append(deleted[:i], deleted[i+1:]...)
+				deleted = slices.Delete(deleted, i, i+1)
+				continue
 			} else if resp == http.StatusNotFound {
 				log.Trace().Msgf("photo %s not found on google photos, but is in local folder, it was probably deleted or removed from album", imageId)
 			} else {
 				return fmt.Errorf("unexpected response for %s: %v", imageId, resp)
 			}
+			i++
 		}
 		if len(deleted) > 0 {
 			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos (in album if using -album), list saved to .removed", len(deleted))
