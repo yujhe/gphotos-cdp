@@ -1049,7 +1049,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 		} else if i > 5 {
 			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 %d times, giving up now", i)
 			break
-		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton {
+		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" {
 			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 again after error: %v", err)
 		} else if err == context.DeadlineExceeded {
 			log.Error().Str("location", location).Msgf("context.DeadlineExceeded when requesting download with method 2, trying again")
