@@ -485,12 +485,12 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		s.photoRelPath = "/album/" + *albumIdFlag
 	}
 
-	if *legacyModeFlag {
-		// This is only used to ensure page is loaded
-		if err := s.setFirstItem(ctx); err != nil {
-			return err
-		}
+	// This is only used to ensure page is loaded
+	if err := s.setFirstItem(ctx); err != nil {
+		return err
+	}
 
+	if *legacyModeFlag {
 		if *startFlag != "" {
 			var url string
 			if strings.Contains(*startFlag, "/") {
