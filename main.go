@@ -1870,18 +1870,23 @@ func (s *Session) resync(ctx context.Context) error {
 			log.Info().Msgf("Folders found for %d local photos that were not found in this sync. Checking google photos to confirm they are not there", len(deleted))
 		}
 		for i, imageId := range deleted {
-			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("http://photos.google.com/photo/"+imageId))
-			if err != nil {
-				log.Err(err).Msgf("error checking for removed file %s: %s", imageId, err.Error())
+			var resp int
+			if err := chromedp.Run(ctx,
+				chromedp.Evaluate(`new Promise((res) => fetch('https://photos.google.com/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
+					func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
+						return p.WithAwaitPromise(true)
+					}),
+			); err != nil {
+				log.Err(err).Msgf("error checking for removed file %s: %s, will not continue checking for removed files", imageId, err.Error())
 				return nil
 			}
-			if resp.Status == http.StatusOK {
+			if resp == http.StatusOK {
 				log.Info().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
 				deleted = append(deleted[:i], deleted[i+1:]...)
-			} else if resp.Status == http.StatusNotFound {
+			} else if resp == http.StatusNotFound {
 				log.Trace().Msgf("photo %s was not in original sync, but is in local folder, it was probably deleted", imageId)
 			} else {
-				return fmt.Errorf("unexpected response for %s: %v", imageId, resp.Status)
+				return fmt.Errorf("unexpected response for %s: %v", imageId, resp)
 			}
 		}
 		if len(deleted) > 0 {
