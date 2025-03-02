@@ -1872,7 +1872,7 @@ func (s *Session) resync(ctx context.Context) error {
 		for i, imageId := range deleted {
 			var resp int
 			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(`new Promise((res) => fetch('https://photos.google.com/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
+				chromedp.Evaluate(`new Promise((res) => fetch('https://photos.google.com`+s.photoRelPath+`/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
 					func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 						return p.WithAwaitPromise(true)
 					}),
@@ -1881,16 +1881,16 @@ func (s *Session) resync(ctx context.Context) error {
 				return nil
 			}
 			if resp == http.StatusOK {
-				log.Info().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
+				log.Debug().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
 				deleted = append(deleted[:i], deleted[i+1:]...)
 			} else if resp == http.StatusNotFound {
-				log.Trace().Msgf("photo %s was not in original sync, but is in local folder, it was probably deleted", imageId)
+				log.Trace().Msgf("photo %s not found on google photos, but is in local folder, it was probably deleted or removed from album", imageId)
 			} else {
 				return fmt.Errorf("unexpected response for %s: %v", imageId, resp)
 			}
 		}
 		if len(deleted) > 0 {
-			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos, list saved to .removed", len(deleted))
+			log.Info().Msgf("Folders found for %d local photos that don't exist on google photos (in album if using -album), list saved to .removed", len(deleted))
 			if err := os.WriteFile(path.Join(s.dlDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
 				return err
 			}
