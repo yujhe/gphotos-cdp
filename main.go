@@ -84,7 +84,6 @@ var (
 var tick = 500 * time.Millisecond
 var errStillProcessing = errors.New("video is still processing & can be downloaded later")
 var errRetry = errors.New("retry")
-var errNoDownloadButton = errors.New("no download button found")
 var errCouldNotPressDownloadButton = errors.New("could not press download button")
 var originalSuffix = "_original"
 var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
@@ -981,7 +980,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				var nodesTmp []*cdp.Node
 				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 4000*time.Millisecond)
 				if err == context.DeadlineExceeded {
-					return errors.New("more options button not visible")
+					return fmt.Errorf("could not find 'more options' button due to %w", err)
 				}
 				return err
 			}),
@@ -996,7 +995,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				var nodesTmp []*cdp.Node
 				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 200*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
-						return errNoDownloadButton
+						return fmt.Errorf("waiting for 'download' button failed due to %w", err)
 					}
 					return err
 				}
@@ -1017,7 +1016,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				var nodes []*cdp.Node
 				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 200*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
-						return errNoDownloadButton
+						return fmt.Errorf("could not find 'download' button due to %w", err)
 					}
 					return err
 				}
@@ -1052,12 +1051,12 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 		if err == nil {
 			break
 		} else if i > 5 {
-			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 %d times, giving up now", i)
+			log.Debug().Str("location", location).Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
-		} else if err == errNoDownloadButton || err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" {
-			log.Debug().Str("location", location).Msgf("Trying to request download with method 2 again after error: %v", err)
-		} else if err == context.DeadlineExceeded {
-			log.Error().Str("location", location).Msgf("context.DeadlineExceeded when requesting download with method 2, trying again")
+		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" {
+			log.Debug().Str("location", location).Msgf("trying to request download with method 2 again after error: %v", err)
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			log.Error().Str("location", location).Msgf("%s when requesting download with method 2, trying again", err.Error())
 		} else {
 			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
 		}
@@ -1234,7 +1233,7 @@ func (s *Session) startDownload(ctx context.Context, location string, dlOriginal
 	}()
 
 	if err := requestDownload2(ctx, location, dlOriginal, hasOriginal); err != nil {
-		if dlOriginal || (err != errCouldNotPressDownloadButton && err != errNoDownloadButton) {
+		if dlOriginal || err != errCouldNotPressDownloadButton {
 			return NewDownload{}, nil, err
 		} else if !dlOriginal {
 			requestDownload1(ctx, location)
