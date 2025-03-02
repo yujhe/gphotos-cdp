@@ -978,7 +978,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
-				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 4000*time.Millisecond)
+				err := doActionWithTimeout(ctx, chromedp.Nodes(`[aria-label="More options"]`, &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond)
 				if err == context.DeadlineExceeded {
 					return fmt.Errorf("could not find 'more options' button due to %w", err)
 				}
@@ -993,7 +993,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for download button to appear
 				var nodesTmp []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 200*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
 						return fmt.Errorf("waiting for 'download' button failed due to %w", err)
 					}
@@ -1014,7 +1014,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			// Press down arrow until the right menu option is selected
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var nodes []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 200*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
 					if err == context.DeadlineExceeded {
 						return fmt.Errorf("could not find 'download' button due to %w", err)
 					}
@@ -1079,7 +1079,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	var timeStr string
 	var tzStr string
 	timeout1 := time.NewTimer(10 * time.Second)
-	timeout2 := time.NewTimer(40 * time.Second)
+	timeout2 := time.NewTimer(90 * time.Second)
 	log.Debug().Msg("Extracting photo date text and original file name")
 
 	var n = 0
@@ -1168,9 +1168,10 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 					if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
 						return err
 					}
+					timeout1 = time.NewTimer(30 * time.Second)
 				case <-timeout2.C:
 					return fmt.Errorf("timeout waiting for photo info")
-				case <-time.After(time.Duration(400+n*50) * time.Millisecond):
+				case <-time.After(time.Duration(250+n*75) * time.Millisecond):
 				}
 			}
 			return nil
