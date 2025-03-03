@@ -1211,8 +1211,6 @@ var dlLock sync.Mutex = sync.Mutex{}
 func (s *Session) startDownload(ctx context.Context, location string, dlOriginal bool, hasOriginal *bool) (newDl NewDownload, progress chan bool, err error) {
 	log.Trace().Msgf("entering startDownload() for %v, dlOriginal=%v", location, dlOriginal)
 
-	cl := GetContextLocks(ctx)
-
 	dlLock.Lock()
 	defer dlLock.Unlock()
 
@@ -1251,49 +1249,8 @@ func (s *Session) startDownload(ctx context.Context, location string, dlOriginal
 
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		// This check only works for requestDownload2 method (not requestDownload1)
-		log.Trace().Msgf("Checking for still processing dialog")
-		var nodes []*cdp.Node
-		if err := chromedp.Nodes(`[aria-label^="Video is still processing"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+		if err := s.checkForStillProcessing(ctx); err != nil {
 			return NewDownload{}, nil, err
-		}
-		isStillProcessing := len(nodes) > 0
-		if isStillProcessing {
-			log.Debug().Msgf("Found still processing dialog, need to press button to remove")
-			// Click the button to close the warning, otherwise it will block navigating to the next photo
-			cl.muKbEvents.Lock()
-			err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
-			cl.muKbEvents.Unlock()
-			if err != nil {
-				return NewDownload{}, nil, err
-			}
-		} else {
-			log.Trace().Msgf("Checking for still processing status (at bottom of screen)")
-			// This check only works for requestDownload1 method (not requestDownload2)
-			if err := chromedp.Evaluate("document.body.textContent.indexOf('Video is still processing &amp; can be downloaded later') != -1", &isStillProcessing).Do(ctx); err != nil {
-				return NewDownload{}, nil, err
-			}
-			if isStillProcessing {
-				log.Debug().Msg("Found still processing status at bottom of screen, waiting for it to disappear before continuing")
-				time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
-			}
-			if !isStillProcessing {
-				// Sometimes Google returns a different error, check for that too
-				log.Trace().Msg("Checking for loading error page")
-				if err := chromedp.Evaluate("document.body.textContent.indexOf('No webpage was found for the web address:') != -1", &isStillProcessing).Do(ctx); err != nil {
-					return NewDownload{}, nil, err
-				}
-				if isStillProcessing {
-					log.Info().Msgf("This is an error page, we will navigate back to the photo to be able to continue: %s", location)
-					if err := navWithAction(ctx, chromedp.NavigateBack()); err != nil {
-						return NewDownload{}, nil, err
-					}
-					time.Sleep(400 * time.Millisecond)
-				}
-			}
-		}
-		if isStillProcessing {
-			log.Warn().Msg("Received 'Video is still processing' error")
-			return NewDownload{}, nil, errStillProcessing
 		}
 
 		select {
@@ -1310,6 +1267,55 @@ func (s *Session) startDownload(ctx context.Context, location string, dlOriginal
 			time.Sleep(25 * time.Millisecond)
 		}
 	}
+}
+
+func (*Session) checkForStillProcessing(ctx context.Context) error {
+	log.Trace().Msgf("Checking for still processing dialog")
+	var nodes []*cdp.Node
+	if err := chromedp.Nodes(`[aria-label^="Video is still processing"] button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+		return err
+	}
+	isStillProcessing := len(nodes) > 0
+	if isStillProcessing {
+		log.Debug().Msgf("Found still processing dialog, need to press button to remove")
+		// Click the button to close the warning, otherwise it will block navigating to the next photo
+		cl := GetContextLocks(ctx)
+		cl.muKbEvents.Lock()
+		err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
+		cl.muKbEvents.Unlock()
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Trace().Msgf("Checking for still processing status (at bottom of screen)")
+		// This check only works for requestDownload1 method (not requestDownload2)
+		if err := chromedp.Evaluate("document.body.textContent.indexOf('Video is still processing &amp; can be downloaded later') != -1", &isStillProcessing).Do(ctx); err != nil {
+			return err
+		}
+		if isStillProcessing {
+			log.Debug().Msg("Found still processing status at bottom of screen, waiting for it to disappear before continuing")
+			time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
+		}
+		if !isStillProcessing {
+			// Sometimes Google returns a different error, check for that too
+			log.Trace().Msg("Checking for loading error page")
+			if err := chromedp.Evaluate("document.body.textContent.indexOf('No webpage was found for the web address:') != -1", &isStillProcessing).Do(ctx); err != nil {
+				return err
+			}
+			if isStillProcessing {
+				log.Info().Msgf("This is an error page, we will navigate back to the photo to be able to continue")
+				if err := navWithAction(ctx, chromedp.NavigateBack()); err != nil {
+					return err
+				}
+				time.Sleep(400 * time.Millisecond)
+			}
+		}
+	}
+	if isStillProcessing {
+		log.Warn().Msg("Received 'Video is still processing' error")
+		return errStillProcessing
+	}
+	return nil
 }
 
 func imageIdFromUrl(location string) (string, error) {
@@ -1735,49 +1741,6 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 
 			log.Trace().Msgf("node for photo %v has attributes %v", imageId, node.Attributes)
-
-			isHighlight := false
-			if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
-				log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
-			} else {
-				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return !!this.getAttribute('aria-label')?.startsWith("Highlight video") }`, &isHighlight,
-					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
-						return p.WithObjectID(jsNode.ObjectID)
-					},
-				)); err != nil {
-					log.Err(err).Msgf("error finding highlight video using CallFunctionOn, %s", err.Error())
-				}
-				if isHighlight {
-					log.Trace().Msg("found highlight video using CallFunctionOn")
-				}
-				if !isHighlight {
-					var html string
-					if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.outerHTML }`, &html,
-						func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
-							return p.WithObjectID(jsNode.ObjectID)
-						},
-					)); err != nil {
-						log.Err(err).Msgf("error finding highlight video using outerHTML, %s", err.Error())
-					}
-					if strings.Contains(html, "Highlight video") {
-						log.Trace().Msg("found highlight video using OuterHTML")
-						isHighlight = true
-					}
-				}
-			}
-
-			if !isHighlight {
-				if strings.HasPrefix(node.AttributeValue("aria-label"), "Highlight video") {
-					log.Trace().Msg("found highlight video using node.AttributeValue")
-					isHighlight = true
-				}
-			}
-
-			if isHighlight {
-				log.Warn().Msgf("photo %v is a highlight video, skipping", imageId)
-				continue
-			}
-
 			log.Info().Msgf("photo %v is missing. Downloading it.", imageId)
 
 			// asynchronously create a new chromedp context, then in that
@@ -1804,19 +1767,6 @@ func (s *Session) resync(ctx context.Context) error {
 					return
 				}
 				time.Sleep(400 * time.Millisecond)
-
-				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`
-						!![...document.querySelectorAll("div")]
-							.filter(el => el.textContent == "Highlight video" && getComputedStyle(el.parentNode).display != "none").length
-						`, &isHighlight)); err != nil {
-					log.Err(err).Msg(err.Error())
-				}
-
-				if isHighlight {
-					log.Warn().Msgf("photo %v is a highlight video, skipping", imageId)
-					dlErrChan <- nil
-					return
-				}
 
 				s.downloadAndProcessItem(ctx, dlErrChan, location)
 			}()
@@ -2004,20 +1954,6 @@ func (s *Session) navN(N int) func(context.Context) error {
 			} else {
 				if err := navLeft(ctx); err != nil {
 					return fmt.Errorf("error at %v: %v", location, err)
-				}
-			}
-
-			for {
-				var res bool
-				if err := chromedp.Evaluate("document.body.textContent.indexOf('Your highlight video will be ready soon') != -1", &res).Do(ctx); err != nil {
-					return fmt.Errorf("error checking for video processing: %v", err)
-				}
-				if res {
-					if err := navLeft(ctx); err != nil {
-						return fmt.Errorf("error at %v: %v", location, err)
-					}
-				} else {
-					break
 				}
 			}
 
