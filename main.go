@@ -56,6 +56,8 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"github.com/spraot/go-dateparser"
 )
 
 var (
@@ -90,7 +92,10 @@ var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var fromDate time.Time
 var toDate time.Time
-
+var dateParserCfg dateparser.Configuration = dateparser.Configuration{
+	Languages:       []string{"en"},
+	DefaultTimezone: time.Local,
+}
 var yearPattern = regexp.MustCompile(`\d{4}$`)
 
 func main() {
@@ -170,9 +175,14 @@ func main() {
 		return
 	}
 
-	if err := s.checkLocale(ctx); err != nil {
+	locale, err := s.getLocale(ctx)
+	if err != nil {
 		log.Err(err).Msg("checking the locale failed")
 		return
+	}
+	if !strings.HasPrefix(locale, "en") {
+		log.Warn().Msgf("Detected Google account locale %v, this is likely to cause issues. Please change account language to English (en)", locale)
+		dateParserCfg.Locales = []string{locale}
 	}
 
 	if err := chromedp.Run(ctx,
@@ -420,7 +430,7 @@ func (s *Session) login(ctx context.Context) error {
 	)
 }
 
-func (s *Session) checkLocale(ctx context.Context) error {
+func (s *Session) getLocale(ctx context.Context) (string, error) {
 	var locale string
 
 	err := chromedp.Run(ctx,
@@ -449,12 +459,11 @@ func (s *Session) checkLocale(ctx context.Context) error {
 	)
 
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to detect account locale")
-	} else if !strings.HasPrefix(locale, "en") {
-		log.Warn().Msgf("Detected Google account locale %v, this is likely to cause issues. Please change account language to English (en)", locale)
+		log.Warn().Err(err).Msg("Failed to detect account locale, will assume English (en)")
+		return "en", nil
 	}
 
-	return nil
+	return locale, nil
 }
 
 func dlScreenshot(ctx context.Context, filePath string) {
@@ -1095,64 +1104,28 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			var filesizeStr string
 
 			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filename),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &filesizeStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &dateStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &timeStr),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.ariaLabel)[0] || ''`, &tzStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &filename),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &filesizeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &dateStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &timeStr),
+				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &tzStr),
 			); err != nil {
 				return err
 			}
 
 			if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
-				filename = strings.TrimPrefix(filename, "Filename: ")
-				dateStr = strings.TrimPrefix(dateStr, "Date taken: ")
-				timeStr = strings.TrimPrefix(timeStr, "Time taken: ")
-				filesizeStr = strings.Replace(strings.TrimPrefix(filesizeStr, "File size: "), ",", "", -1)
+				filesizeStr = strings.Replace(filesizeStr, ",", "", -1)
 				log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
 				log.Trace().Msgf("Parsing filename: %v", filename)
 				log.Trace().Msgf("Parsing file size: %v", filesizeStr)
 
 				// Parse file size
 				if len(filesizeStr) > 0 {
-					var unitFactor int64 = 1
-					if s := strings.TrimSuffix(filesizeStr, " B"); s != filesizeStr {
-						filesizeStr = s
-					} else if s := strings.TrimSuffix(filesizeStr, " KB"); s != filesizeStr {
-						unitFactor = 1000
-						filesizeStr = s
-					} else if s := strings.TrimSuffix(filesizeStr, " MB"); s != filesizeStr {
-						unitFactor = 1000 * 1000
-						filesizeStr = s
-					} else if s := strings.TrimSuffix(filesizeStr, " GB"); s != filesizeStr {
-						unitFactor = 1000 * 1000 * 1000
-						filesizeStr = s
-					}
-					filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(filesizeStr), 64)
+					filesize, err := parseFileSize(filesizeStr)
 					if err != nil {
-						return err
+						return fmt.Errorf("could not parse file size: %w", err)
 					}
-					filesize = int64(filesizeFloat * float64(unitFactor))
 					log.Trace().Msgf("Parsed file size: %v bytes", filesize)
-				}
-
-				// Handle dates from current year (UI doesn't show current year so we add it)
-				if !yearPattern.MatchString(dateStr) {
-					dateStr += fmt.Sprintf(", %d", time.Now().Year())
-				}
-
-				// Handle special days like "Yesterday" and "Today"
-				timeStr = strings.Replace(timeStr, "Yesterday", time.Now().AddDate(0, 0, -1).Format("Mon"), -1)
-				timeStr = strings.Replace(timeStr, "Today", time.Now().Format("Mon"), -1)
-
-				// If timezone is not visible, use current timezone (parse provided date to account for DST)
-				if len(tzStr) == 0 {
-					t, err := time.Parse("Jan 2, 2006", dateStr)
-					if err != nil {
-						t = time.Now()
-					}
-					_, offset := t.Zone()
-					tzStr = fmt.Sprintf("%+03d%02d", offset/3600, (offset%3600)/60)
 				}
 			} else {
 				log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
@@ -1182,25 +1155,36 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 		}
 	}
 
-	var datetimeStr = strings.Map(func(r rune) rune {
-		if r >= 32 && r <= 126 {
-			return r
-		}
-		return -1
-	}, dateStr+" "+timeStr) + " " + strings.Map(func(r rune) rune {
-		if (r >= '0' && r <= '9') || r == '+' || r == '-' {
-			return r
-		}
-		return -1
-	}, tzStr)
-	date, err := time.Parse("Jan 2, 2006 Mon, 3:04PM Z0700", datetimeStr)
+	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + ", " + tzStr)
+	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
 	if err != nil {
 		return PhotoData{}, err
 	}
 
 	log.Debug().Msgf("Found date: %v and original filename: %v and file size %d", date, filename, filesize)
 
-	return PhotoData{date, filename, filesize}, nil
+	return PhotoData{date.Time, filename, filesize}, nil
+}
+
+func parseFileSize(s0 string) (int64, error) {
+	var unitFactor int64 = 1
+	if s := strings.TrimSuffix(s0, " B"); s != s0 {
+		s0 = s
+	} else if s := strings.TrimSuffix(s0, " KB"); s != s0 {
+		unitFactor = 1000
+		s0 = s
+	} else if s := strings.TrimSuffix(s0, " MB"); s != s0 {
+		unitFactor = 1000 * 1000
+		s0 = s
+	} else if s := strings.TrimSuffix(s0, " GB"); s != s0 {
+		unitFactor = 1000 * 1000 * 1000
+		s0 = s
+	}
+	filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(s0), 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(filesizeFloat * float64(unitFactor)), nil
 }
 
 var dlLock sync.Mutex = sync.Mutex{}
@@ -2220,4 +2204,13 @@ func fileNames(files []fs.FileInfo) []string {
 		names[i] = f.Name()
 	}
 	return names
+}
+
+func onlyPrintable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 32 && r <= 126 {
+			return r
+		}
+		return -1
+	}, s)
 }
