@@ -181,11 +181,16 @@ func main() {
 		log.Err(err).Msg("checking the locale failed")
 		return
 	}
-	if !strings.HasPrefix(locale, "en") {
-		log.Warn().Msgf("Detected Google account locale %v, this is likely to cause issues. Please change account language to English (en)", locale)
-		dateParserCfg.Locales = []string{locale}
-	}
+
 	initLocales()
+	var exists bool
+	loc, exists = locales[locale]
+	if !exists {
+		log.Warn().Msgf("Your Google account is using unsupported locale %s, this is likely to cause issues. Please change account language to English (en) or another supported locale", locale)
+		dateParserCfg.Locales = []string{locale}
+	} else {
+		log.Info().Msgf("Using locale %s", locale)
+	}
 	loc = locales[locale]
 
 	if err := chromedp.Run(ctx,
@@ -592,7 +597,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			dateNodesClassName := ""
 			for range 20 {
 				chromedp.Evaluate(`
-				document.querySelector('`+getAriaLabelSelector(loc.selectAllPhotosLabel)+`').parentNode.childNodes[1].childNodes[0].childNodes[0].childNodes[0].className
+				document.querySelector('`+getAriaLabelSelector(loc.SelectAllPhotosLabel)+`').parentNode.childNodes[1].childNodes[0].childNodes[0].childNodes[0].className
 				`, &dateNodesClassName).Do(ctx)
 				if dateNodesClassName != "" {
 					break
@@ -970,12 +975,12 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 // viewed item.
 func requestDownload2(ctx context.Context, location string, original bool, hasOriginal *bool) error {
 	log.Debug().Str("original", fmt.Sprintf("%v", original)).Msgf("Requesting download (method 2) for %s", location)
-	originalSelector := getAriaLabelSelector(loc.downloadOriginalLabel)
+	originalSelector := getAriaLabelSelector(loc.DownloadOriginalLabel)
 	var selector string
 	if original {
 		selector = originalSelector
 	} else {
-		selector = getAriaLabelSelector(loc.downloadLabel)
+		selector = getAriaLabelSelector(loc.DownloadLabel)
 	}
 
 	i := 0
@@ -989,7 +994,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
-				err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.moreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond)
+				err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.MoreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond)
 				if err == context.DeadlineExceeded {
 					return fmt.Errorf("could not find 'more options' button due to %w", err)
 				}
@@ -997,7 +1002,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			}),
 
 			// Open more options dialog
-			chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.moreOptionsLabel)+`')].pop().click()`, nil),
+			chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.MoreOptionsLabel)+`')].pop().click()`, nil),
 			// chromedp.Sleep(50*time.Millisecond),
 
 			// Go to download button
@@ -1104,10 +1109,10 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			n++
 
 			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.fileNameLabel)), &filename),
-				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.dateLabel)), &dateStr),
-				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.dateLabel)+" + div "+getAriaLabelSelector(loc.timeLabel)), &timeStr),
-				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.dateLabel)+" + div "+getAriaLabelSelector(loc.tzLabel)), &tzStr),
+				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.FileNameLabel)), &filename),
+				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)), &dateStr),
+				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TimeLabel)), &timeStr),
+				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TzLabel)), &tzStr),
 			); err != nil {
 				return err
 			}
@@ -1117,7 +1122,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 				// Click on info button
 				log.Debug().Msg("Date not visible, clicking on i button")
-				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.openInfoMatch)+`')].pop()?.click()`, nil)); err != nil {
+				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.OpenInfoMatch)+`')].pop()?.click()`, nil)); err != nil {
 					return err
 				}
 
@@ -1144,8 +1149,8 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	log.Trace().Msgf("Parsing filename: %v", filename)
 
 	// Handle special days like "Yesterday" and "Today"
-	timeStr = strings.Replace(timeStr, loc.yesterday, loc.shortDayNames[time.Now().AddDate(0, 0, -1).Day()], -1)
-	timeStr = strings.Replace(timeStr, loc.today, loc.shortDayNames[time.Now().Day()], -1)
+	timeStr = strings.Replace(timeStr, loc.Yesterday, loc.ShortDayNames[time.Now().AddDate(0, 0, -1).Day()], -1)
+	timeStr = strings.Replace(timeStr, loc.Today, loc.ShortDayNames[time.Now().Day()], -1)
 	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
 	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
 	if err != nil {
@@ -1226,7 +1231,7 @@ func (s *Session) startDownload(ctx context.Context, location string, dlOriginal
 func (*Session) checkForStillProcessing(ctx context.Context) error {
 	log.Trace().Msgf("Checking for still processing dialog")
 	var nodes []*cdp.Node
-	if err := chromedp.Nodes(getAriaLabelSelector(loc.videoStillProcessingDialogLabel)+` button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+	if err := chromedp.Nodes(getAriaLabelSelector(loc.VideoStillProcessingDialogLabel)+` button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
 		return err
 	}
 	isStillProcessing := len(nodes) > 0
@@ -1243,7 +1248,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 	} else {
 		log.Trace().Msgf("Checking for still processing status (at bottom of screen)")
 		// This check only works for requestDownload1 method (not requestDownload2)
-		if err := chromedp.Evaluate("document.body.textContent.indexOf('"+loc.videoStillProcessingStatusText+"') != -1", &isStillProcessing).Do(ctx); err != nil {
+		if err := chromedp.Evaluate("document.body.textContent.indexOf('"+loc.VideoStillProcessingStatusText+"') != -1", &isStillProcessing).Do(ctx); err != nil {
 			return err
 		}
 		if isStillProcessing {
@@ -1253,7 +1258,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		if !isStillProcessing {
 			// Sometimes Google returns a different error, check for that too
 			log.Trace().Msg("Checking for loading error page")
-			if err := chromedp.Evaluate("document.body.textContent.indexOf('"+loc.noWebpageFoundText+"') != -1", &isStillProcessing).Do(ctx); err != nil {
+			if err := chromedp.Evaluate("document.body.textContent.indexOf('"+loc.NoWebpageFoundText+"') != -1", &isStillProcessing).Do(ctx); err != nil {
 				return err
 			}
 			if isStillProcessing {
@@ -1905,7 +1910,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 
 			var morePhotosAvailable bool
-			checkForNavLeftButton := `!![...document.querySelectorAll('` + getAriaLabelSelector(loc.viewPreviousPhotoMatch) + `')].slice(-1).map(x => window.getComputedStyle(x).display !== 'none')[0]`
+			checkForNavLeftButton := `!![...document.querySelectorAll('` + getAriaLabelSelector(loc.ViewPreviousPhotoMatch) + `')].slice(-1).map(x => window.getComputedStyle(x).display !== 'none')[0]`
 			if err := chromedp.Evaluate(checkForNavLeftButton, &morePhotosAvailable).Do(ctx); err != nil {
 				return fmt.Errorf("error checking for nav left button: %v", err)
 			}

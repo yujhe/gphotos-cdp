@@ -1,0 +1,46 @@
+en:
+  selectAllPhotosLabel:
+    matchType: startsWith
+    matchValue: "Select all photos from"
+  fileNameLabel:
+    matchType: startsWith
+    matchValue: "Filename:"
+  dateLabel:
+    matchType: startsWith
+    matchValue: "Date taken:"
+  today: "Today"
+  yesterday: "Yesterday"
+  timeLabel:
+    matchType: startsWith
+    matchValue: "Time taken:"
+  tzLabel:
+    matchType: startsWith
+    matchValue: "GMT"
+  viewPreviousPhotoMatch:
+    matchType: equals
+    matchValue: "View previous photo"
+  moreOptionsLabel:
+    matchType: equals
+    matchValue: "More options"
+  downloadLabel:
+    matchType: equals
+    matchValue: "Download - Shift+D"
+  downloadOriginalLabel:
+    matchType: equals
+    matchValue: "Download original"
+  openInfoMatch:
+    matchType: equals
+    matchValue: "Open info"
+  videoStillProcessingDialogLabel:
+    matchType: startsWith
+    matchValue: "Video still is processing"
+  videoStillProcessingStatusText: "Video is still processing &amp; can be downloaded later"
+  noWebpageFoundText: "No webpage was found for the web address:"
+  shortDayNames: 
+    - "Sun"
+    - "Mon"
+    - "Tue"
+    - "Wed"
+    - "Thu"
+    - "Fri"
+    - "Sat"
