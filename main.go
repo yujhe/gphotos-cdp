@@ -75,7 +75,7 @@ var (
 	jsonLogFlag    = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag   = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 	removedFlag    = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos (not supported in legacy mode)")
-	fixFlag        = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename, date, and size, then update date if wrong (legacy mode only)")
+	fixFlag        = flag.Bool("fix", false, "instead of skipping already downloaded files, check if they have the correct filename and date, then update date if wrong (legacy mode only)")
 	lastDoneFlag   = flag.String("lastdone", ".lastdone", "name of file to store last done URL in relative to dlDir (legacy mode only)")
 	workersFlag    = flag.Int("workers", 6, "number of concurrent downloads allowed")
 	albumIdFlag    = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
@@ -214,7 +214,6 @@ func main() {
 type PhotoData struct {
 	date     time.Time
 	filename string
-	fileSize int64
 }
 
 type Job struct {
@@ -1083,7 +1082,6 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 // aria-label="Date taken: ?????" field.
 func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	var filename string
-	var filesize int64 = 0
 	var dateStr string
 	var timeStr string
 	var tzStr string
@@ -1101,11 +1099,9 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
 			n++
-			var filesizeStr string
 
 			if err := chromedp.Run(ctx,
 				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Filename:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &filename),
-				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="File size:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &filesizeStr),
 				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &dateStr),
 				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="Time taken:"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &timeStr),
 				chromedp.Evaluate(`[...document.querySelectorAll('[aria-label^="Date taken:"] + div [aria-label^="GMT"]')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, &tzStr),
@@ -1114,21 +1110,10 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			}
 
 			if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
-				filesizeStr = strings.Replace(filesizeStr, ",", "", -1)
 				log.Trace().Msgf("Parsing date: %v and time: %v", dateStr, timeStr)
 				log.Trace().Msgf("Parsing filename: %v", filename)
-				log.Trace().Msgf("Parsing file size: %v", filesizeStr)
-
-				// Parse file size
-				if len(filesizeStr) > 0 {
-					filesize, err := parseFileSize(filesizeStr)
-					if err != nil {
-						return fmt.Errorf("could not parse file size: %w", err)
-					}
-					log.Trace().Msgf("Parsed file size: %v bytes", filesize)
-				}
 			} else {
-				log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v, File size: %v", dateStr, timeStr, tzStr, filename, filesizeStr)
+				log.Trace().Msgf("Incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v", dateStr, timeStr, tzStr, filename)
 
 				// Click on info button
 				log.Debug().Msg("Date not visible, clicking on i button")
@@ -1161,30 +1146,9 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 		return PhotoData{}, err
 	}
 
-	log.Debug().Msgf("Found date: %v and original filename: %v and file size %d", date, filename, filesize)
+	log.Debug().Msgf("Found date: %v and original filename: %v", date, filename)
 
-	return PhotoData{date.Time, filename, filesize}, nil
-}
-
-func parseFileSize(s0 string) (int64, error) {
-	var unitFactor int64 = 1
-	if s := strings.TrimSuffix(s0, " B"); s != s0 {
-		s0 = s
-	} else if s := strings.TrimSuffix(s0, " KB"); s != s0 {
-		unitFactor = 1000
-		s0 = s
-	} else if s := strings.TrimSuffix(s0, " MB"); s != s0 {
-		unitFactor = 1000 * 1000
-		s0 = s
-	} else if s := strings.TrimSuffix(s0, " GB"); s != s0 {
-		unitFactor = 1000 * 1000 * 1000
-		s0 = s
-	}
-	filesizeFloat, err := strconv.ParseFloat(strings.TrimSpace(s0), 64)
-	if err != nil {
-		return 0, err
-	}
-	return int64(filesizeFloat * float64(unitFactor)), nil
+	return PhotoData{date.Time, filename}, nil
 }
 
 var dlLock sync.Mutex = sync.Mutex{}
@@ -2068,28 +2032,6 @@ func (s *Session) checkFile(ctx context.Context, files []fs.FileInfo, imageId st
 			return err
 		}
 		return errRetry
-	}
-
-	if data.fileSize == 0 {
-		log.Debug().Msgf("can't check size because the we could not find an expected file size for file: %v", files[0].Name())
-	} else {
-		var fileOnDiskSize int64 = 0
-		if originalFile != nil {
-			fileOnDiskSize = originalFile.Size()
-		} else if liveFile != nil {
-			for _, f := range files {
-				fileOnDiskSize += f.Size()
-			}
-		}
-
-		if fileOnDiskSize == 0 {
-			log.Warn().Msgf("can't compare size of unexpected local files: %s", strings.Join(fileNames(files), ", "))
-		} else {
-			if math.Abs(1-float64(data.fileSize)/float64(fileOnDiskSize)) > 0.15 {
-				// No handling for this case yet, just log it
-				log.Warn().Msgf("File size mismatch for %s/%s : %v != %v", imageId, data.filename, data.fileSize, fileOnDiskSize)
-			}
-		}
 	}
 
 	var localFilename, processedLocalFilename string
