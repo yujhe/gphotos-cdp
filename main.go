@@ -1739,9 +1739,23 @@ func (s *Session) resync(ctx context.Context) error {
 			if len(entries) > 0 {
 				continue
 			}
+			ariaLabel := ""
+			if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
+				log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
+			} else {
+				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
+					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
+						return p.WithObjectID(jsNode.ObjectID)
+					},
+				)); err != nil {
+					log.Err(err).Msgf("error finding highlight video using CallFunctionOn, %s", err.Error())
+				}
+				if ariaLabel != "" {
+					ariaLabel = "(" + ariaLabel + ")"
+				}
+			}
 
-			log.Trace().Msgf("node for photo %v has attributes %v", imageId, node.Attributes)
-			log.Info().Msgf("photo %v is missing. Downloading it.", imageId)
+			log.Info().Msgf("photo %v %s is missing. Downloading it.", imageId, ariaLabel)
 
 			// asynchronously create a new chromedp context, then in that
 			// context navigate to that photo and call dlAndProcess
