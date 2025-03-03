@@ -187,11 +187,10 @@ func main() {
 	loc, exists = locales[locale]
 	if !exists {
 		log.Warn().Msgf("Your Google account is using unsupported locale %s, this is likely to cause issues. Please change account language to English (en) or another supported locale", locale)
-		dateParserCfg.Locales = []string{locale}
 	} else {
 		log.Info().Msgf("Using locale %s", locale)
 	}
-	loc = locales[locale]
+	dateParserCfg.Locales = []string{locale}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
@@ -663,29 +662,12 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 						continue
 					}
 					dateStr := n.Children[0].NodeValue
-					// Handle special days like "Yesterday" and "Today"
-					if dateStr == "Yesterday" {
-						dateStr = time.Now().AddDate(0, 0, -1).Format("Mon, Jan 2, 2006")
-					} else if dateStr == "Today" {
-						dateStr = time.Now().Format("Mon, Jan 2, 2006")
-					} else if !strings.Contains(dateStr, ",") {
-						for i := range 5 {
-							t := time.Now().AddDate(0, 0, -2-i)
-							if t.Weekday().String() == dateStr {
-								dateStr = t.Format("Mon, Jan 2, 2006")
-								break
-							}
-						}
-					}
-					if !yearPattern.MatchString(dateStr) {
-						dateStr += fmt.Sprintf(", %d", time.Now().Year())
-					}
-					t, err := time.Parse("Mon, Jan 2, 2006", dateStr)
+					dpt, err := dateparser.Parse(&dateParserCfg, dateStr)
 					if err != nil {
-						return errors.New("could not parse date element " + dateStr + " with format 'Mon, Jan 2, 2006'")
+						return fmt.Errorf("could not parse date %s: %w", dateStr, err)
 					}
-					diff := t.Sub(startDate).Hours()
-					log.Trace().Msgf("parsed date element %v with distance %d days", t, int(diff/24))
+					diff := dpt.Time.Sub(startDate).Hours()
+					log.Trace().Msgf("parsed date element %v with distance %d days", dpt.Time, int(diff/24))
 					if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
 						closestDateNode = n
 						closestDateDiff = diff
