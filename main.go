@@ -61,11 +61,11 @@ var (
 	nItemsFlag    = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag       = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	dlDirFlag     = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	profileFlag   = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	fromFlag      = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag        = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
 	runFlag       = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag   = flag.Bool("v", false, "be verbose")
-	fileDateFlag  = flag.Bool("date", false, "set the file date to the photo date from the Google Photos UI")
 	headlessFlag  = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
 	jsonLogFlag   = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag  = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
@@ -107,11 +107,11 @@ func main() {
 	if !*jsonLogFlag {
 		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 	}
-	if !*devFlag {
-		log.Fatal().Msg("-start only allowed in dev mode")
+	if (!*devFlag && *profileFlag == "") && *headlessFlag {
+		log.Fatal().Msg("-headless only allowed in dev mode or if -profile dir is set")
 	}
-	if !*devFlag && *headlessFlag {
-		log.Fatal().Msg("-headless only allowed in dev mode")
+	if *devFlag && *profileFlag != "" {
+		log.Fatal().Msg("only one of -dev and -profile can be used")
 	}
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
@@ -251,6 +251,11 @@ func NewSession() (*Session, error) {
 	var dir string
 	if *devFlag {
 		dir = filepath.Join(os.TempDir(), "gphotos-cdp")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, err
+		}
+	} else if *profileFlag != "" {
+		dir = *profileFlag
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, err
 		}
@@ -1733,10 +1738,6 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, dlCount *int) error {
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
 func doFileDateUpdate(date time.Time, filePaths []string) error {
-	if !*fileDateFlag {
-		return nil
-	}
-
 	log.Debug().Msgf("Setting file date for %v", filePaths)
 
 	for _, f := range filePaths {
