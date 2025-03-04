@@ -1866,5 +1866,16 @@ func dirHasFiles(s string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(entries) > 0, nil
+	for _, v := range entries {
+		if !v.IsDir() {
+			f, err := os.Stat(filepath.Join(s, v.Name()))
+			if err != nil {
+				return false, err
+			}
+			if f.Size() > 0 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
