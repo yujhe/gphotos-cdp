@@ -953,8 +953,10 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
-				err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.MoreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond)
-				return fmt.Errorf("could not find 'more options' button due to %w", err)
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.MoreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond); err != nil {
+					return fmt.Errorf("could not find 'more options' button due to %w", err)
+				}
+				return nil
 			}),
 
 			// Open more options dialog
@@ -973,7 +975,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				if hasOriginal != nil {
 					var dlOriginalNodes []*cdp.Node
 					if err := chromedp.Nodes(originalSelector, &dlOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
-						return err
+						return fmt.Errorf("checking for original version failed due to %w", err)
 					}
 					*hasOriginal = len(dlOriginalNodes) > 0
 				}
