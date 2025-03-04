@@ -1441,7 +1441,7 @@ func (s *Session) resync(ctx context.Context) error {
 	}
 
 	for {
-		if retries%5 == 0 {
+		if retries > 0 && retries%5 == 0 {
 			c := chromedp.FromContext(ctx)
 			target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
@@ -1452,6 +1452,11 @@ func (s *Session) resync(ctx context.Context) error {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
+		}
+
+		if retries > 0 && retries%25 == 0 {
+			// loading slow, let's give it some extra time
+			time.Sleep(1 * time.Second)
 		}
 
 		// New new nodes found, does it look like we are done?
@@ -1467,17 +1472,17 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 		}
 
-		if n != 0 {
-			if inProgressCnt >= *workersFlag || n%100 == 0 {
-				if err := s.processJobs(&asyncJobs, *workersFlag-1, &inProgressCnt); err != nil {
-					if err == errPhotoTakenBeforeFromDate {
-						log.Info().Msg("Found photo taken before -from date, stopping sync here")
-						break
-					}
-					return err
+		if inProgressCnt >= *workersFlag || n%100 == 0 {
+			if err := s.processJobs(&asyncJobs, *workersFlag-1, &inProgressCnt); err != nil {
+				if err == errPhotoTakenBeforeFromDate {
+					log.Info().Msg("Found photo taken before -from date, stopping sync here")
+					break
 				}
+				return err
 			}
+		}
 
+		if n != 0 {
 			if i >= len(nodes) {
 				log.Trace().Msgf("finding new nodes to process")
 
@@ -1488,14 +1493,17 @@ func (s *Session) resync(ctx context.Context) error {
 					}
 					batchProcessing = newBatchProcessing
 				}
+
 				if batchProcessing {
 					// Constrained by finding new files to download, let's get a whole batch to process
-					// start by scrolling to the next batch by focusing the last processed node
-					log.Trace().Msgf("Scrolling to %v", lastNode.NodeID)
-					if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
-						log.Debug().Msgf("error scrolling to next batch of items: %v", err)
+
+					if retries == 0 {
+						// start by scrolling to the next batch by focusing the last processed node
+						log.Trace().Msgf("Scrolling to last processed node: %v", lastNode.NodeID)
+						if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
+							log.Debug().Msgf("error scrolling to next batch of items: %v", err)
+						}
 					}
-					time.Sleep(50 * time.Millisecond)
 
 					if err := chromedp.Nodes(photoNodeSelector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
 						return fmt.Errorf("error finding photo nodes, %w", err)
@@ -1516,7 +1524,7 @@ func (s *Session) resync(ctx context.Context) error {
 						continue
 					}
 					if foundNodes == len(nodes) {
-						log.Debug().Msg("only new nodes found, expected an overlap")
+						log.Warn().Msg("only new nodes found, expected an overlap")
 					}
 				}
 
@@ -1556,13 +1564,8 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 		}
 
-		if len(nodes) == 0 {
-			continue
-		}
-
 		lastNode = nodes[i]
 		href := lastNode.AttributeValue("href")
-		retries = 0
 		lastHref = href
 
 		n++
@@ -1575,6 +1578,7 @@ func (s *Session) resync(ctx context.Context) error {
 		photoIds = append(photoIds, imageId)
 		log.Trace().Msgf("processing %v", imageId)
 
+		continue
 		if _, ok := existingDlFoldersMap[imageId]; ok {
 			hasFiles, err := dirHasFiles(filepath.Join(s.dlDir, imageId))
 			if err != nil {
