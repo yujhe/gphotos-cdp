@@ -115,6 +115,9 @@ func main() {
 	if *devFlag && *profileFlag != "" {
 		log.Fatal().Msg("only one of -dev and -profile can be used")
 	}
+	if *albumIdFlag != "" && (*fromFlag != "" || *toFlag != "") {
+		log.Fatal().Msg("-from and -to cannot be used with -album")
+	}
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
@@ -456,8 +459,10 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
 	if *albumIdFlag != "" {
-		if strings.Contains(*albumIdFlag, "/") {
+		i := strings.LastIndex(s.photoRelPath, "/")
+		if i != -1 {
 			s.photoRelPath = "/" + *albumIdFlag
+			*albumIdFlag = s.photoRelPath[i+1:]
 		} else {
 			s.photoRelPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
 		}
@@ -531,7 +536,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 				if err := chromedp.Evaluate(`
 						(function() {
 							const main = document.querySelector('[role="main"]');
-							return main.scrollTop/main.scrollHeight;
+							return (main.scrollTop+main.clientHeight/2)/main.scrollHeight;
 						})();
 					`, &scrollPos).Do(ctx); err != nil {
 					return err
@@ -1370,7 +1375,24 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 		chromedp.Evaluate(`+(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueNow || 0.0)`, &sliderPos),
 		chromedp.Evaluate(`(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueText || '')`, &sliderText),
 	); err != nil {
-		return 0, "", fmt.Errorf("error finding slider node, %w", err)
+		return 0, "", fmt.Errorf("couldn't find slider node, %w", err)
+	}
+
+	if sliderText == "" && sliderPos == 0 {
+		var mainSel string
+		if len(*albumIdFlag) > 1 {
+			mainSel = `c-wiz c-wiz c-wiz`
+		} else {
+			mainSel = `[role="main"]`
+		}
+
+		if err := chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
+		(function() {
+			var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
+			return nodes.length > 0 ? (nodes[0].scrollTop+nodes[0].clientHeight/2)/nodes[0].scrollHeight : 0.0;
+		})()`, mainSel), &sliderPos)); err != nil {
+			return 0, "", fmt.Errorf("couldn't calculate scroll position, %w", err)
+		}
 	}
 
 	return sliderPos, sliderText, nil
@@ -1578,7 +1600,6 @@ func (s *Session) resync(ctx context.Context) error {
 		photoIds = append(photoIds, imageId)
 		log.Trace().Msgf("processing %v", imageId)
 
-		continue
 		if _, ok := existingDlFoldersMap[imageId]; ok {
 			hasFiles, err := dirHasFiles(filepath.Join(s.dlDir, imageId))
 			if err != nil {
