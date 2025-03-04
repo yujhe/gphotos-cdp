@@ -253,6 +253,20 @@ type Session struct {
 }
 
 func NewSession() (*Session, error) {
+	var photoRelPath string
+	if *albumIdFlag != "" {
+		i := strings.LastIndex(photoRelPath, "/")
+		if i != -1 {
+			if *albumTypeFlag != "" {
+				log.Warn().Msgf("-albumtype argument is ignored because it looks like given album ID already contains a type: %v", *albumIdFlag)
+			}
+			photoRelPath = "/" + *albumIdFlag
+			*albumIdFlag = photoRelPath[i+1:]
+		} else {
+			photoRelPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
+		}
+	}
+	log.Info().Msgf("syncing files at root dir %s%s", gphotosUrl, photoRelPath)
 	var dir string
 	if *devFlag {
 		dir = filepath.Join(os.TempDir(), "gphotos-cdp")
@@ -284,11 +298,12 @@ func NewSession() (*Session, error) {
 	}
 
 	s := &Session{
-		profileDir: dir,
-		dlDir:      dlDir,
-		dlDirTmp:   dlDirTmp,
-		nextDl:     make(chan DownloadChannels, 1),
-		err:        make(chan error, 1),
+		profileDir:   dir,
+		dlDir:        dlDir,
+		dlDirTmp:     dlDirTmp,
+		nextDl:       make(chan DownloadChannels, 1),
+		err:          make(chan error, 1),
+		photoRelPath: photoRelPath,
 	}
 	return s, nil
 }
@@ -458,16 +473,6 @@ func dlScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
-	if *albumIdFlag != "" {
-		i := strings.LastIndex(s.photoRelPath, "/")
-		if i != -1 {
-			s.photoRelPath = "/" + *albumIdFlag
-			*albumIdFlag = s.photoRelPath[i+1:]
-		} else {
-			s.photoRelPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
-		}
-	}
-
 	// This is only used to ensure page is loaded
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
