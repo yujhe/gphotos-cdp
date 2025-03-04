@@ -75,10 +75,12 @@ var (
 	albumTypeFlag = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
 )
 
-var tick = 500 * time.Millisecond
+const gphotosUrl = "https://photos.google.com"
+const tick = 500 * time.Millisecond
+const originalSuffix = "_original"
+
 var errStillProcessing = errors.New("video is still processing & can be downloaded later")
 var errCouldNotPressDownloadButton = errors.New("could not press download button")
-var originalSuffix = "_original"
 var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var fromDate time.Time
@@ -360,7 +362,7 @@ func (s *Session) cleanDlDir() error {
 func (s *Session) login(ctx context.Context) error {
 	log.Info().Msg("Starting authentication...")
 	return chromedp.Run(ctx,
-		chromedp.Navigate("https://photos.google.com/"),
+		chromedp.Navigate(gphotosUrl),
 		// when we're not authenticated, the URL is actually
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
 		// authenticated.
@@ -375,7 +377,7 @@ func (s *Session) login(ctx context.Context) error {
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
-				if strings.HasPrefix(location, "https://photos.google.com") {
+				if strings.HasPrefix(location, gphotosUrl) {
 					return nil
 				}
 				if *headlessFlag {
@@ -467,13 +469,13 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	}
 
 	if s.photoRelPath != "" {
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com"+s.photoRelPath))
+		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(gphotosUrl+s.photoRelPath))
 		if err != nil {
 			return err
 		}
 		code := resp.Status
 		if code != http.StatusOK {
-			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com%s", code, s.photoRelPath)
+			return fmt.Errorf("unexpected %d code when restarting to %s%s", code, gphotosUrl, s.photoRelPath)
 		}
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 	}
@@ -1375,7 +1377,7 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 }
 
 // Resync the library/album of photos
-// Use [...document.querySelectorAll('a[href^="./{relPath}photo/"]')] to find all visible photos
+// Use [...document.querySelectorAll('a[href^=".{relPath}photo/"]')] to find all visible photos
 // Check that each one is already downloaded. Optionally check/update date from the element
 // attr, e.g. aria-label="Photo - Landscape - Feb 12, 2025, 6:34:39 PM"
 // Then do .pop().focus() on the last a element found to scroll to it and make more photos visible
@@ -1398,6 +1400,19 @@ func (s *Session) resync(ctx context.Context) error {
 	lastHref := ""
 	inProgressCnt := 0
 	batchProcessing := false
+	var photoNodeSelector string
+	nodeHrefPrefix := s.photoRelPath
+
+	if strings.HasPrefix(nodeHrefPrefix, "/u/") {
+		nodeHrefPrefix = nodeHrefPrefix[3:]
+		a := strings.Index(nodeHrefPrefix, "/")
+		if a == -1 {
+			nodeHrefPrefix = ""
+		} else {
+			nodeHrefPrefix = nodeHrefPrefix[a:]
+		}
+	}
+	photoNodeSelector = fmt.Sprintf(`a[href^=".%s/photo/"]`, nodeHrefPrefix)
 
 	dlDirEntries, err := os.ReadDir(s.dlDir)
 	if err != nil {
@@ -1414,7 +1429,7 @@ func (s *Session) resync(ctx context.Context) error {
 		opts = append(opts, chromedp.FromNode(s.startNodeParent))
 	}
 
-	if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, opts...).Do(ctx); err != nil {
+	if err := chromedp.Nodes(photoNodeSelector, &nodes, opts...).Do(ctx); err != nil {
 		return fmt.Errorf("error finding photo nodes, %w", err)
 	}
 	if len(nodes) == 0 {
@@ -1482,7 +1497,7 @@ func (s *Session) resync(ctx context.Context) error {
 					}
 					time.Sleep(50 * time.Millisecond)
 
-					if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
+					if err := chromedp.Nodes(photoNodeSelector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
 						return fmt.Errorf("error finding photo nodes, %w", err)
 					}
 					log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
@@ -1595,7 +1610,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 		// asynchronously create a new chromedp context, then in that
 		// context navigate to that photo and call downloadAndProcessItem
-		location := "https://photos.google.com" + s.photoRelPath + "/photo/" + imageId
+		location := gphotosUrl + s.photoRelPath + "/photo/" + imageId
 		dlErrChan := make(chan error, 1)
 		go func() {
 			ctx, cancel := chromedp.NewContext(ctx)
@@ -1653,7 +1668,7 @@ func (s *Session) resync(ctx context.Context) error {
 			imageId := deleted[i]
 			var resp int
 			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(`new Promise((res) => fetch('https://photos.google.com`+s.photoRelPath+`/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
+				chromedp.Evaluate(`new Promise((res) => fetch('`+gphotosUrl+s.photoRelPath+`/photo/`+imageId+`').then(x => res(x.status)));`, &resp,
 					func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 						return p.WithAwaitPromise(true)
 					}),
