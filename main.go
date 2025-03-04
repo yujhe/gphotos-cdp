@@ -32,9 +32,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,7 +94,6 @@ var dateParserCfg dateparser.Configuration = dateparser.Configuration{
 	Languages:       []string{"en"},
 	DefaultTimezone: time.Local,
 }
-var yearPattern = regexp.MustCompile(`\d{4}$`)
 var loc GPhotosLocale
 
 func main() {
@@ -168,7 +165,7 @@ func main() {
 		return
 	}
 
-	ctx, cancel := s.NewContext()
+	ctx, cancel := s.NewWindow()
 	defer cancel()
 
 	if err := s.login(ctx); err != nil {
@@ -331,7 +328,7 @@ func NewSession() (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) NewContext() (context.Context, context.CancelFunc) {
+func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 	log.Info().Msgf("Starting Chrome browser")
 
 	// Let's use as a base for allocator options (It implies Headless)
@@ -356,8 +353,8 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 	s.parentCancel = cancel
 
 	ctx, cancel = chromedp.NewContext(s.parentContext)
-	ctx = SetContextLocks(ctx)
-	// browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.dlDirTmp).WithEventsEnabled(true).Do(ctx)
+	ctx = SetContextData(ctx)
+
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			c := chromedp.FromContext(ctx)
@@ -716,26 +713,6 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	return nil
 }
 
-func (s *Session) getSliderPos(ctx context.Context) (float64, error) {
-	var sliderNodes []*cdp.Node
-
-	time.Sleep(200 * time.Millisecond)
-	if err := doActionWithTimeout(ctx, chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery), 2*time.Second); err != nil {
-		return 0.0, errors.New("slider position node not found, " + err.Error())
-	}
-
-	posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
-	if !exists {
-		return 0.0, errors.New("slider position not found")
-	}
-	sliderPos, err := strconv.ParseFloat(posStr, 64)
-	if err != nil {
-		return 0.0, errors.New("slider position not found, " + err.Error())
-	}
-
-	return sliderPos, nil
-}
-
 // setFirstItem looks for the first item, and sets it as s.firstItem.
 // We always run it first even for code paths that might not need s.firstItem,
 // because we also run it for the side-effect of waiting for the first page load to
@@ -854,7 +831,7 @@ func doRun(filePath string) error {
 
 // navLeft navigates to the next item to the left
 func navWithAction(ctx context.Context, action chromedp.Action) error {
-	cl := GetContextLocks(ctx)
+	cl := GetContextData(ctx)
 	st := time.Now()
 	cl.muNavWaiting.Lock()
 	cl.listenEvents = true
@@ -977,10 +954,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				// Wait for more options menu to appear
 				var nodesTmp []*cdp.Node
 				err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.MoreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond)
-				if err == context.DeadlineExceeded {
-					return fmt.Errorf("could not find 'more options' button due to %w", err)
-				}
-				return err
+				return fmt.Errorf("could not find 'more options' button due to %w", err)
 			}),
 
 			// Open more options dialog
@@ -992,10 +966,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 				// Wait for download button to appear
 				var nodesTmp []*cdp.Node
 				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
-					if err == context.DeadlineExceeded {
-						return fmt.Errorf("waiting for 'download' button failed due to %w", err)
-					}
-					return err
+					return fmt.Errorf("waiting for 'download' button failed due to %w", err)
 				}
 
 				// Check if there is an original version of the image that can also be downloaded
@@ -1013,10 +984,7 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var nodes []*cdp.Node
 				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
-					if err == context.DeadlineExceeded {
-						return fmt.Errorf("could not find 'download' button due to %w", err)
-					}
-					return err
+					return fmt.Errorf("could not find 'download' button due to %w", err)
 				}
 
 				n := 0
@@ -1049,12 +1017,10 @@ func requestDownload2(ctx context.Context, location string, original bool, hasOr
 		if err == nil {
 			break
 		} else if i > 5 {
-			log.Debug().Str("location", location).Msgf("trying to request download with method 2 %d times, giving up now", i)
+			log.Warn().Str("location", location).Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
-		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" {
-			log.Debug().Str("location", location).Msgf("trying to request download with method 2 again after error: %v", err)
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			log.Error().Str("location", location).Msgf("%s when requesting download with method 2, trying again", err.Error())
+		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
+			log.Warn().Str("location", location).Msgf("trying to request download with method 2 again after error: %v", err)
 		} else {
 			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
 		}
@@ -1135,8 +1101,14 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	timeStr = strings.Replace(timeStr, loc.Today, loc.ShortDayNames[time.Now().Day()], -1)
 	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
 	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
+	if err != nil && strings.HasSuffix(err.Error(), "unknown format") {
+		log.Err(err).Msg("dateparser returned potentially spurious error, trying again with no language in cfg")
+		cfg := dateParserCfg
+		cfg.Languages = []string{}
+		date, err = dateparser.Parse(&cfg, fullDateStr)
+	}
 	if err != nil {
-		return PhotoData{}, err
+		return PhotoData{}, fmt.Errorf("getting photo data, %w", err)
 	}
 
 	log.Debug().Msgf("Found date: %v and original filename: %v", date, filename)
@@ -1220,7 +1192,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 	if isStillProcessing {
 		log.Debug().Msgf("Found still processing dialog, need to press button to remove")
 		// Click the button to close the warning, otherwise it will block navigating to the next photo
-		cl := GetContextLocks(ctx)
+		cl := GetContextData(ctx)
 		cl.muKbEvents.Lock()
 		err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
 		cl.muKbEvents.Unlock()
@@ -1512,11 +1484,11 @@ type contextKey struct {
 // Define the key for context locks
 var contextLocksKey = &contextKey{name: "contextLocks"}
 
-func GetContextLocks(ctx context.Context) ContextLocksPointer {
+func GetContextData(ctx context.Context) ContextLocksPointer {
 	return ctx.Value(contextLocksKey).(ContextLocksPointer)
 }
 
-func SetContextLocks(ctx context.Context) context.Context {
+func SetContextData(ctx context.Context) context.Context {
 	return context.WithValue(ctx, contextLocksKey, &ContextLocks{
 		muNavWaiting: sync.RWMutex{},
 		muKbEvents:   sync.Mutex{},
@@ -1527,7 +1499,7 @@ func SetContextLocks(ctx context.Context) context.Context {
 }
 
 func listenNavEvents(ctx context.Context) {
-	cl := GetContextLocks(ctx)
+	cl := GetContextData(ctx)
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		cl.muNavWaiting.RLock()
 		listen := cl.listenEvents
@@ -1553,13 +1525,18 @@ func listenNavEvents(ctx context.Context) {
 	})
 }
 
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
+func getSliderPosAndText(ctx context.Context) (float64, string, error) {
+	var sliderPos float64
+	var sliderText string
+
+	if err := chromedp.Run(ctx,
+		chromedp.Evaluate(`+(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueNow || 0.0)`, &sliderPos),
+		chromedp.Evaluate(`(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueText || '')`, &sliderText),
+	); err != nil {
+		return 0, "", fmt.Errorf("error finding slider node, %w", err)
 	}
-	return false
+
+	return sliderPos, sliderText, nil
 }
 
 // This function can be used instead of NavN to resync the list of photos
@@ -1576,201 +1553,263 @@ func (s *Session) resync(ctx context.Context) error {
 	asyncJobs := []Job{}
 	photoIds := []string{}
 	lastNode := &cdp.Node{}
+	var nodes []*cdp.Node
+	i := 0
 	n := 0
 	dlCnt := 0
 	retries := 0
 	sliderPos := 0.0
-	sliderText := ""
+	estimatedRemaining := 1000
+	lastHref := ""
+	inProgressCnt := 0
+	batchProcessing := false
+
+	dlDirEntries, err := os.ReadDir(s.dlDir)
+	if err != nil {
+		return err
+	}
+	existingDlFoldersMap := make(map[string]struct{}, len(dlDirEntries))
+	for _, e := range dlDirEntries {
+		existingDlFoldersMap[e.Name()] = struct{}{}
+	}
+
+	log.Trace().Msgf("Finding start node")
+	opts := []chromedp.QueryOption{chromedp.ByQuery, chromedp.AtLeast(0)}
+	if s.startNodeParent != nil {
+		opts = append(opts, chromedp.FromNode(s.startNodeParent))
+	}
+
+	if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, opts...).Do(ctx); err != nil {
+		return fmt.Errorf("error finding photo nodes, %w", err)
+	}
+	if len(nodes) == 0 {
+		log.Info().Msg("No photos to resync")
+		return nil
+	}
+	if err := dom.Focus().WithNodeID(nodes[0].NodeID).Do(ctx); err != nil {
+		return fmt.Errorf("error focusing first photo node, %w", err)
+	}
+
 	for {
-		// find all currently visible photos
-		log.Trace().Msgf("Finding photo nodes on page")
-		opts := []chromedp.QueryOption{chromedp.ByQueryAll, chromedp.AtLeast(0)}
-		if s.startNodeParent != nil {
-			opts = append(opts, chromedp.FromNode(s.startNodeParent))
-			s.startNodeParent = nil
-		}
+		if retries%5 == 0 {
+			c := chromedp.FromContext(ctx)
+			target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
-		var nodes []*cdp.Node
-		if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, opts...).Do(ctx); err != nil {
-			return fmt.Errorf("error finding photo nodes, %w", err)
-		}
-
-		if n == 0 && len(nodes) == 0 {
-			log.Info().Msg("No photos to resync")
-			break
-		}
-
-		log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
-
-		var sliderNodes []*cdp.Node
-		if err := chromedp.Run(ctx,
-			chromedp.Nodes(`div[role="slider"][aria-valuemax="1"][aria-valuetext]`, &sliderNodes, chromedp.ByQuery, chromedp.AtLeast(0)),
-		); err != nil {
-			return fmt.Errorf("error finding slider node, %w", err)
-		}
-		if len(sliderNodes) > 0 {
-			posStr, exists := sliderNodes[0].Attribute("aria-valuenow")
-			if exists {
-				pos, err := strconv.ParseFloat(posStr, 64)
-				if err == nil {
-					sliderPos = pos
-				}
-			}
-			sliderText, exists = sliderNodes[0].Attribute("aria-valuetext")
-			if !exists {
-				sliderText = ""
-			}
-		}
-
-		// remove already processed nodes
-		for i, node := range nodes {
-			if node == lastNode {
-				log.Trace().Msgf("Found %d nodes, %d have already been processed", len(nodes), i+1)
-				nodes = nodes[i+1:]
-				break
-			}
-		}
-
-		n = n + len(nodes)
-
-		if len(nodes) == 0 {
-			retries++
-
-			// New new nodes found, does it look like we are done?
-			if retries > 400 || (retries > 40 && sliderPos > math.Max(0.95, float64(1-(50/n)))) {
-				break
-			}
-
-			if retries%4 == 0 {
+			if batchProcessing {
 				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
-				c := chromedp.FromContext(ctx)
-				target.ActivateTarget(c.Target.TargetID).Do(ctx)
 				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
 					log.Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
+				time.Sleep(50 * time.Millisecond)
 			}
-
-			if retries%10 == 0 {
-				log.Debug().Msgf("Retried getting new items %d times at %0.2f%% done", retries, sliderPos*100)
-			}
-
-			time.Sleep(50 * time.Millisecond)
-			continue
-		} else {
-			retries = 0
 		}
 
-		// check that each one is already downloaded
-		log.Trace().Msgf("Checking %d nodes for new photos", len(nodes))
-		for _, node := range nodes {
-			href := node.AttributeValue("href")
-			imageId, err := imageIdFromUrl(href)
-			if err != nil {
-				return err
-			}
-			photoIds = append(photoIds, imageId)
+		// New new nodes found, does it look like we are done?
+		if retries > 5000 || (retries > 100 && estimatedRemaining < 50) {
+			break
+		}
 
-			entries, err := os.ReadDir(filepath.Join(s.dlDir, imageId))
+		if n%50 == 0 {
+			var err error
+			sliderPos, _, err = getSliderPosAndText(ctx)
 			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("error getting slider position and text, %w", err)
+			}
+		}
+
+		if n != 0 {
+			if inProgressCnt >= *workersFlag || n%100 == 0 {
+				if err := s.processJobs(&asyncJobs, *workersFlag-1, false, &inProgressCnt); err != nil {
+					if err == errPhotoTakenBeforeFromDate {
+						log.Info().Msg("Found photo taken before -from date, stopping sync here")
+						break
+					}
 					return err
 				}
 			}
 
-			if len(entries) > 0 {
-				continue
+			if i >= len(nodes) {
+				log.Trace().Msgf("finding new nodes to process")
+
+				if retries == 0 {
+					newBatchProcessing := n > 100 && (inProgressCnt == 0 || inProgressCnt*2 < *workersFlag)
+					if newBatchProcessing != batchProcessing {
+						log.Info().Msgf("setting batchProcessing = %v", newBatchProcessing)
+					}
+					batchProcessing = newBatchProcessing
+				}
+				if batchProcessing {
+					// Constrained by finding new files to download, let's get a whole batch to process
+					// start by scrolling to the next batch by focusing the last processed node
+					log.Trace().Msgf("Scrolling to %v", lastNode.NodeID)
+					if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
+						log.Debug().Msgf("error scrolling to next batch of items: %v", err)
+					}
+					time.Sleep(50 * time.Millisecond)
+
+					if err := chromedp.Nodes(`a[href^=".`+s.photoRelPath+`/photo/"]`, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
+						return fmt.Errorf("error finding photo nodes, %w", err)
+					}
+					log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
+
+					// remove already processed nodes
+					foundNodes := len(nodes)
+					for i, node := range nodes {
+						if node == lastNode {
+							log.Trace().Msgf("Found %d nodes, %d have already been processed", len(nodes), i+1)
+							nodes = nodes[i+1:]
+							break
+						}
+					}
+					if len(nodes) == 0 {
+						retries++
+						continue
+					}
+					if foundNodes == len(nodes) {
+						log.Debug().Msg("only new nodes found, expected an overlap")
+					}
+				}
+
+				if !batchProcessing {
+					// Constrained by downloads, just move one right
+					if err := chromedp.KeyEvent(kb.ArrowRight).Do(ctx); err != nil {
+						return fmt.Errorf("error sending right arrow key event, %w", err)
+					}
+					time.Sleep(1 * time.Millisecond)
+
+					log.Trace().Msg("Getting active element (if it's an A element with a photo href)")
+					if err := chromedp.Nodes(`document.activeElement`, &nodes, chromedp.ByJSPath).Do(ctx); err != nil {
+						return fmt.Errorf("error getting active element, %w", err)
+					}
+
+					if nodes[0].NodeName != "A" || nodes[0].AttributeValue("href") == lastHref {
+						log.Trace().Msg("didn't find new photo node, will try again")
+						time.Sleep(1 * time.Millisecond)
+						nodes = []*cdp.Node{}
+						retries++
+						continue
+					}
+				}
+
+				retries = 0
+				i = 0
 			}
-			ariaLabel := ""
-			if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
-				log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
+
+			if n < 200 {
+				estimatedRemaining = 200
 			} else {
-				if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
-					func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
-						return p.WithObjectID(jsNode.ObjectID)
-					},
-				)); err != nil {
-					log.Err(err).Msgf("error finding highlight video using CallFunctionOn, %s", err.Error())
-				}
-				if ariaLabel != "" {
-					ariaLabel = "(" + ariaLabel + ")"
-				}
+				estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n)))
 			}
 
-			log.Info().Msgf("photo %v %s is missing. Downloading it.", imageId, ariaLabel)
-
-			// asynchronously create a new chromedp context, then in that
-			// context navigate to that photo and call dlAndProcess
-			location := "https://photos.google.com/photo/" + imageId
-			dlErrChan := make(chan error, 1)
-			go func() {
-				ctx, cancel := chromedp.NewContext(ctx)
-				defer cancel()
-
-				ctx = SetContextLocks(ctx)
-				listenNavEvents(ctx)
-
-				log.Trace().Msgf("Navigating to %v", location)
-				resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
-				if err != nil {
-					dlErrChan <- fmt.Errorf("error navigating to %v: %w", location, err)
-					return
-				}
-				if resp.Status == http.StatusOK {
-					chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-				} else {
-					dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-					return
-				}
-				time.Sleep(400 * time.Millisecond)
-
-				s.downloadAndProcessItem(ctx, dlErrChan, location)
-			}()
-			asyncJobs = append(asyncJobs, Job{location, dlErrChan})
-			dlCnt++
-
-			if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
-				if err == errPhotoTakenBeforeFromDate {
-					log.Info().Msg("Found photo taken before -from date, stopping sync here")
-					break
-				}
-				return err
+			if timedLogReady("resyncLoop", 60*time.Second) {
+				log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%%, estimated remaining: %d", n, dlCnt, sliderPos*100, estimatedRemaining)
 			}
 		}
-		log.Trace().Msgf("Finished processing %d nodes", len(nodes))
 
-		if err := s.processJobs(&asyncJobs, *workersFlag-1, false); err != nil {
+		if len(nodes) == 0 {
+			continue
+		}
+
+		lastNode = nodes[i]
+		href := lastNode.AttributeValue("href")
+		retries = 0
+		lastHref = href
+
+		n++
+		i++
+
+		imageId, err := imageIdFromUrl(href)
+		if err != nil {
 			return err
 		}
+		photoIds = append(photoIds, imageId)
+		log.Trace().Msgf("processing %v", imageId)
 
-		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
+		if _, ok := existingDlFoldersMap[imageId]; ok {
+			hasFiles, err := dirHasFiles(filepath.Join(s.dlDir, imageId))
+			if err != nil {
+				return err
+			} else if hasFiles {
+				log.Trace().Msgf("skipping %v, already downloaded", imageId)
+				continue
+			}
 		}
 
-		// scroll to the next batch by focusing the last node
-		log.Trace().Msgf("Scrolling to %v", nodes[len(nodes)-1].NodeID)
-		lastNode = nodes[len(nodes)-1]
-		if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
-			log.Debug().Msgf("error scrolling to next batch of items: %v", err)
+		ariaLabel := ""
+		if jsNode, err := dom.ResolveNode().WithNodeID(lastNode.NodeID).Do(ctx); err != nil {
+			log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
+		} else {
+			if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
+				func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
+					return p.WithObjectID(jsNode.ObjectID)
+				},
+			)); err != nil {
+				log.Err(err).Msgf("error reading node ariaLabel, %s", err.Error())
+			}
+			if ariaLabel != "" {
+				ariaLabel = "(" + ariaLabel + ")"
+			}
 		}
-	}
-	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%% (at %s)", n, dlCnt, sliderPos*100, sliderText)
 
-	// Check if there are folders in the dl dir that were not seen in gphotos
-	entries, err := os.ReadDir(s.dlDir)
-	if err != nil {
-		return err
-	}
+		if strings.Contains(ariaLabel, "Highlight video") {
+			log.Info().Msgf("Skipping highlight video %v (%s)", imageId, ariaLabel)
+			continue
+		}
 
-	// Create a map for O(1) lookups instead of using contains() which is O(n)
-	photoIdsMap := make(map[string]struct{}, len(photoIds))
-	for _, id := range photoIds {
-		photoIdsMap[id] = struct{}{}
+		log.Info().Msgf("photo %v %s is missing. Downloading it.", imageId, ariaLabel)
+
+		// asynchronously create a new chromedp context, then in that
+		// context navigate to that photo and call downloadAndProcessItem
+		location := "https://photos.google.com" + s.photoRelPath + "/photo/" + imageId
+		dlErrChan := make(chan error, 1)
+		go func() {
+			ctx, cancel := chromedp.NewContext(ctx)
+			defer cancel()
+
+			ctx = SetContextData(ctx)
+			listenNavEvents(ctx)
+
+			log.Trace().Msgf("Navigating to %v", location)
+			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+			if err != nil {
+				dlErrChan <- fmt.Errorf("error navigating to %v: %w", location, err)
+				return
+			}
+			if resp.Status == http.StatusOK {
+				chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			} else {
+				dlErrChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+				return
+			}
+
+			time.Sleep(200 * time.Millisecond)
+
+			s.downloadAndProcessItem(ctx, dlErrChan, location)
+		}()
+		asyncJobs = append(asyncJobs, Job{location, dlErrChan})
+		dlCnt++
+		inProgressCnt++
+
+		skippedCnt := n - dlCnt
+
+		if float64(len(dlDirEntries)-skippedCnt)/float64(estimatedRemaining) < 0.05 {
+			// It might be faster to switch to NavN mode now
+		}
+
 	}
+	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%%", n, dlCnt, sliderPos*100)
 
 	if *removedFlag {
+		// Check if there are folders in the dl dir that were not seen in gphotos
+
+		// Create a map for O(1) lookups instead of using contains() which is O(n)
+		photoIdsMap := make(map[string]struct{}, len(photoIds))
+		for _, id := range photoIds {
+			photoIdsMap[id] = struct{}{}
+		}
 		log.Info().Msg("Checking for removed files")
 		deleted := []string{}
-		for _, entry := range entries {
+		for _, entry := range dlDirEntries {
 			if entry.IsDir() && entry.Name() != "tmp" {
 				// Check if the folder name is in the map of photo IDs
 				if _, exists := photoIdsMap[entry.Name()]; !exists {
@@ -1813,7 +1852,7 @@ func (s *Session) resync(ctx context.Context) error {
 		}
 	}
 
-	return s.processJobs(&asyncJobs, 0, false)
+	return s.processJobs(&asyncJobs, 0, false, nil)
 }
 
 // navN successively downloads the currently viewed item, and navigates to the
@@ -1882,7 +1921,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				log.Debug().Msgf("Skipping %v, file already exists in download dir", imageId)
 			}
 
-			if err := s.processJobs(&asyncJobs, *workersFlag-1, true); err != nil {
+			if err := s.processJobs(&asyncJobs, *workersFlag-1, true, nil); err != nil {
 				return err
 			}
 
@@ -1918,14 +1957,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 		}
 
-		return s.processJobs(&asyncJobs, 0, true)
+		return s.processJobs(&asyncJobs, 0, true, nil)
 	}
 }
 
-func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
+func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool, dlCount *int) error {
 	n := 0
+	if dlCount == nil {
+		dlCount = new(int)
+	}
 	for {
-		dlCount := 0
+		*dlCount = 0
 		for i := range *jobs {
 			if (*jobs)[i].errChan == nil {
 				continue
@@ -1950,7 +1992,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			}
 
 			if (*jobs)[i].errChan != nil {
-				dlCount++
+				*dlCount++
 			}
 		}
 
@@ -1965,24 +2007,24 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, doMarkDone bool) error {
 			}
 
 			if len(*jobs) > 0 && timedLogReady("processJobs", 90*time.Second) {
-				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", dlCount, len(*jobs)-dlCount)
+				log.Info().Msgf("%d downloads in progress, %d downloads waiting to be marked as done", *dlCount, len(*jobs)-*dlCount)
 			}
 
 			if len(*jobs) <= maxJobs || maxJobs < 0 {
 				break
 			}
 		} else {
-			if dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
-				log.Info().Msgf("%d download jobs currently in progress", dlCount)
+			if *dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
+				log.Info().Msgf("%d download jobs currently in progress", *dlCount)
 			}
 
-			if dlCount <= maxJobs || maxJobs < 0 {
+			if *dlCount <= maxJobs || maxJobs < 0 {
 				break
 			}
 		}
 
 		// Let's wait for some downloads to finish before starting more
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		n++
 		if n > 50000 {
 			return errors.New("waited too long for jobs to exit, exiting")
@@ -2153,4 +2195,15 @@ func onlyPrintable(s string) string {
 
 func getContentOfFirstVisibleNodeScript(sel string) string {
 	return fmt.Sprintf(`[...document.querySelectorAll('%s')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, sel)
+}
+
+func dirHasFiles(s string) (bool, error) {
+	entries, err := os.ReadDir(s)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
 }
