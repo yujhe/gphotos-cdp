@@ -536,7 +536,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 				if err := chromedp.Evaluate(`
 						(function() {
 							const main = document.querySelector('[role="main"]');
-							return (main.scrollTop+main.clientHeight/2)/main.scrollHeight;
+							return (main.scrollTop+0.0001)/(main.scrollHeight-main.clientHeight+0.0001);
 						})();
 					`, &scrollPos).Do(ctx); err != nil {
 					return err
@@ -1372,27 +1372,24 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 	var sliderText string
 
 	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`+(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueNow || 0.0)`, &sliderPos),
 		chromedp.Evaluate(`(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueText || '')`, &sliderText),
 	); err != nil {
 		return 0, "", fmt.Errorf("couldn't find slider node, %w", err)
 	}
 
-	if sliderText == "" && sliderPos == 0 {
-		var mainSel string
-		if len(*albumIdFlag) > 1 {
-			mainSel = `c-wiz c-wiz c-wiz`
-		} else {
-			mainSel = `[role="main"]`
-		}
+	var mainSel string
+	if len(*albumIdFlag) > 1 {
+		mainSel = `c-wiz c-wiz c-wiz`
+	} else {
+		mainSel = `[role="main"]`
+	}
 
-		if err := chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
-		(function() {
-			var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
-			return nodes.length > 0 ? (nodes[0].scrollTop+nodes[0].clientHeight/2)/nodes[0].scrollHeight : 0.0;
-		})()`, mainSel), &sliderPos)); err != nil {
-			return 0, "", fmt.Errorf("couldn't calculate scroll position, %w", err)
-		}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
+	(function() {
+		var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
+		return nodes.length > 0 ? (nodes[0].scrollTop+0.0001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.0001) : 0.0;
+	})()`, mainSel), &sliderPos)); err != nil {
+		return 0, "", fmt.Errorf("couldn't calculate scroll position, %w", err)
 	}
 
 	return sliderPos, sliderText, nil
@@ -1486,7 +1483,7 @@ func (s *Session) resync(ctx context.Context) error {
 			break
 		}
 
-		if n%50 == 0 {
+		if n < 10 || n%40 == 0 {
 			var err error
 			sliderPos, _, err = getSliderPosAndText(ctx)
 			if err != nil {
@@ -1502,6 +1499,16 @@ func (s *Session) resync(ctx context.Context) error {
 				}
 				return err
 			}
+		}
+
+		if n < 5 || sliderPos < 0.0001 {
+			estimatedRemaining = 50
+		} else {
+			estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n)))
+		}
+
+		if timedLogReady("resyncLoop", 60*time.Second) {
+			log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%%, estimated remaining: %d", n, dlCnt, sliderPos*100, estimatedRemaining)
 		}
 
 		if n != 0 {
@@ -1573,16 +1580,6 @@ func (s *Session) resync(ctx context.Context) error {
 
 				retries = 0
 				i = 0
-			}
-
-			if n < 200 {
-				estimatedRemaining = 200
-			} else {
-				estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n)))
-			}
-
-			if timedLogReady("resyncLoop", 60*time.Second) {
-				log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%%, estimated remaining: %d", n, dlCnt, sliderPos*100, estimatedRemaining)
 			}
 		}
 
