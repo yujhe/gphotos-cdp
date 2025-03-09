@@ -944,8 +944,8 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	log.Trace().Msgf("Parsing filename: %v", filename)
 
 	// Handle special days like "Yesterday" and "Today"
-	timeStr = strings.Replace(timeStr, loc.Yesterday, loc.ShortDayNames[time.Now().AddDate(0, 0, -1).Day()], -1)
-	timeStr = strings.Replace(timeStr, loc.Today, loc.ShortDayNames[time.Now().Day()], -1)
+	timeStr = strings.Replace(timeStr, loc.Yesterday, loc.ShortDayNames[time.Now().AddDate(0, 0, -1).Weekday()], -1)
+	timeStr = strings.Replace(timeStr, loc.Today, loc.ShortDayNames[time.Now().Weekday()], -1)
 	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
 	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
 	if err != nil && strings.HasSuffix(err.Error(), "unknown format") {
