@@ -70,7 +70,7 @@ var (
 	jsonLogFlag   = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag  = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 	removedFlag   = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
-	workersFlag   = flag.Int("workers", 6, "number of concurrent downloads allowed")
+	workersFlag   = flag.Int("workers", 4, "number of concurrent downloads allowed")
 	albumIdFlag   = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
 )
@@ -210,8 +210,8 @@ type PhotoData struct {
 }
 
 type Job struct {
-	imageId string
-	errChan chan error
+	imageIds []string
+	errChan  chan error
 }
 
 type NewDownload struct {
@@ -380,7 +380,7 @@ func (s *Session) cdpLog(format string, v ...any) {
 }
 
 func (s *Session) cdpDebug(format string, v ...any) {
-	log.Trace().Msgf(format, v...)
+	// log.Trace().Msgf(format, v...)
 }
 
 func (s *Session) cdpError(format string, v ...any) {
@@ -1145,7 +1145,7 @@ func (s *Session) makeOutDir(imageId string) (string, error) {
 }
 
 // processDownload creates a directory in s.dlDir with name = imageId and moves the downloaded files into that directory
-func (s *Session) processDownload(log zerolog.Logger, dl NewDownload, dlProgress chan bool, errChan chan error, isOriginal bool, imageId string, photoDataChan chan PhotoData) {
+func (s *Session) processDownload(log zerolog.Logger, dl NewDownload, dlProgress chan bool, isOriginal bool, imageId string, photoDataChan chan PhotoData) error {
 	log.Trace().Msgf("entering processDownload for %v", dl.GUID)
 	dlTimeout := time.NewTimer(time.Minute)
 progressLoop:
@@ -1160,8 +1160,7 @@ progressLoop:
 				dlTimeout.Reset(time.Minute)
 			}
 		case <-dlTimeout.C:
-			errChan <- fmt.Errorf("timeout waiting for download to complete for %v", imageId)
-			return
+			return fmt.Errorf("timeout waiting for download to complete for %v", imageId)
 		}
 	}
 
@@ -1169,8 +1168,7 @@ progressLoop:
 
 	outDir, err := s.makeOutDir(imageId)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
 
 	var filePaths []string
@@ -1178,8 +1176,7 @@ progressLoop:
 		var err error
 		filePaths, err = s.handleZip(filepath.Join(s.dlDirTmp, dl.GUID), outDir)
 		if err != nil {
-			errChan <- err
-			return
+			return err
 		}
 	} else {
 		var filename string
@@ -1198,59 +1195,58 @@ progressLoop:
 		newFile := filepath.Join(outDir, filename)
 		log.Debug().Msgf("Moving %v to %v", dl.GUID, newFile)
 		if err := os.Rename(filepath.Join(s.dlDirTmp, dl.GUID), newFile); err != nil {
-			errChan <- err
-			return
+			return err
 		}
 		filePaths = []string{newFile}
 	}
 
 	if err := doFileDateUpdate(data.date, filePaths); err != nil {
-		errChan <- err
-		return
+		return err
 	}
 
 	for _, f := range filePaths {
 		if err := doRun(f); err != nil {
-			errChan <- err
-			return
+			return err
 		}
 	}
-
-	errChan <- nil
 
 	for _, f := range filePaths {
 		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), data.date.Format(time.DateOnly))
 	}
+
+	return nil
 }
 
 // downloadAndProcessItem starts a download then sends it to processDownload for processing
-func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string, outerErrChan chan error) {
+func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string) error {
+	log.Trace().Msgf("entering downloadAndProcessItem()")
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	log.Trace().Msgf("entering downloadAndProcessItem()")
-
 	photoDataChan := make(chan PhotoData, 2)
+	hasOriginalChan := make(chan bool, 1)
+	errChan := make(chan error)
+	jobsRemaining := 3
+
 	go func() {
 		log.Trace().Msgf("Getting photo data")
 		data, err := s.getPhotoData(ctx)
 		if err != nil {
-			outerErrChan <- err
+			errChan <- err
 		} else {
 			if fromDate != (time.Time{}) && data.date.Before(fromDate) {
-				outerErrChan <- errPhotoTakenBeforeFromDate
+				errChan <- errPhotoTakenBeforeFromDate
 			}
 			if toDate != (time.Time{}) && data.date.After(toDate) {
-				outerErrChan <- errPhotoTakenAfterToDate
+				errChan <- errPhotoTakenAfterToDate
 			}
 			// we need two of these if we are downloading an original
 			photoDataChan <- data
 			photoDataChan <- data
+			errChan <- nil
 		}
 	}()
-
-	errChan1 := make(chan error, 1)
-	hasOriginalChan := make(chan bool, 1)
 
 	go func() {
 		hasOriginal := false
@@ -1258,15 +1254,13 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		if err != nil {
 			log.Trace().Msgf("download of failed: %v", err)
 			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-			errChan1 <- err
+			errChan <- err
 			hasOriginalChan <- false
 		} else {
 			hasOriginalChan <- hasOriginal
-			go s.processDownload(log, dl, dlProgress, errChan1, false, imageId, photoDataChan)
+			errChan <- s.processDownload(log, dl, dlProgress, false, imageId, photoDataChan)
 		}
 	}()
-
-	errChan2 := make(chan error, 1)
 
 	go func() {
 		if <-hasOriginalChan {
@@ -1275,16 +1269,14 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			if err != nil {
 				log.Trace().Msgf("download of failed: %v", err)
 				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
-				errChan2 <- err
+				errChan <- err
 			} else {
-				go s.processDownload(log, dl, dlProgress, errChan2, true, imageId, photoDataChan)
+				errChan <- s.processDownload(log, dl, dlProgress, true, imageId, photoDataChan)
 			}
 		} else {
-			errChan2 <- nil
+			errChan <- nil
 		}
 	}()
-
-	jobsRemaining := 2
 
 	go func() {
 		for {
@@ -1298,31 +1290,27 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 	}()
 
 	for {
-		var err error
 		select {
-		case err = <-errChan1:
-		case err = <-errChan2:
-		case <-ctx.Done():
-			return
-		}
-		log.Trace().Msgf("downloadAndProcessItem(): job result: %s", err)
-		jobsRemaining--
-		if err != nil {
-			// Error downloading original or generated image, remove files already downloaded
-			outDir, errTmp := s.makeOutDir(imageId)
-			if errTmp != nil {
-				log.Err(errTmp).Msg(errTmp.Error())
-			} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
-				log.Err(errTmp).Msg(errTmp.Error())
+		case err := <-errChan:
+			log.Trace().Msgf("downloadAndProcessItem(): job result: %s", err)
+			jobsRemaining--
+			if err != nil {
+				// Error downloading original or generated image, remove files already downloaded
+				outDir, errTmp := s.makeOutDir(imageId)
+				if errTmp != nil {
+					log.Err(errTmp).Msg(errTmp.Error())
+				} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
+					log.Err(errTmp).Msg(errTmp.Error())
+				}
+				return err
 			}
-			outerErrChan <- err
-		}
-		if jobsRemaining == 0 {
-			break
+			if jobsRemaining == 0 {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-
-	outerErrChan <- nil
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -1446,15 +1434,12 @@ func (s *Session) resync(ctx context.Context) error {
 	asyncJobs := []Job{}
 	lastNode := &cdp.Node{}
 	var nodes []*cdp.Node
-	i := 0
-	n := 0
-	dlCnt := 0
-	retries := 0
+	i := 0       // next node to process in nodes array
+	n := 0       // number of nodes processed in all
+	dlCnt := 0   // number of photos downloaded
+	retries := 0 // number of subsequent failed attempts to find new items to download
 	sliderPos := 0.0
 	estimatedRemaining := 1000
-	lastHref := ""
-	inProgressCnt := 0
-	batchProcessing := false
 	var photoNodeSelector string
 	nodeHrefPrefix := s.photoRelPath
 
@@ -1496,13 +1481,11 @@ func (s *Session) resync(ctx context.Context) error {
 			c := chromedp.FromContext(ctx)
 			target.ActivateTarget(c.Target.TargetID).Do(ctx)
 
-			if batchProcessing {
-				log.Trace().Msgf("We seem to be stuck, manually scrolling might help")
-				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
-					log.Err(err).Msgf("error scrolling page down manually, %v", err)
-				}
-				time.Sleep(50 * time.Millisecond)
+			log.Debug().Msgf("We seem to be stuck, manually scrolling might help")
+			if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
+				log.Err(err).Msgf("error scrolling page down manually, %v", err)
 			}
+			time.Sleep(50 * time.Millisecond)
 		}
 
 		if retries > 0 && retries%25 == 0 {
@@ -1523,14 +1506,12 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 		}
 
-		if inProgressCnt >= *workersFlag || n%100 == 0 {
-			if err := s.processJobs(&asyncJobs, *workersFlag-1, &inProgressCnt); err != nil {
-				if err == errPhotoTakenBeforeFromDate {
-					log.Info().Msg("Found photo taken before -from date, stopping sync here")
-					break
-				}
-				return err
+		if err := s.processJobs(&asyncJobs, *workersFlag-1); err != nil {
+			if err == errPhotoTakenBeforeFromDate {
+				log.Info().Msg("Found photo taken before -from date, stopping sync here")
+				break
 			}
+			return err
 		}
 
 		if n < 5 || sliderPos < 0.0001 {
@@ -1543,137 +1524,123 @@ func (s *Session) resync(ctx context.Context) error {
 			log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%%, estimated remaining: %d", n, dlCnt, sliderPos*100, estimatedRemaining)
 		}
 
-		if n != 0 {
-			if i >= len(nodes) {
-				log.Trace().Msgf("finding new nodes to process")
+		if n != 0 && i >= len(nodes) {
+			log.Debug().Msgf("finding new nodes to process")
 
-				if retries == 0 {
-					newBatchProcessing := n > 100 && (inProgressCnt == 0 || inProgressCnt*2 < *workersFlag)
-					if newBatchProcessing != batchProcessing {
-						log.Info().Msgf("setting batchProcessing = %v", newBatchProcessing)
-					}
-					batchProcessing = newBatchProcessing
+			if retries == 0 {
+				// start by scrolling to the next batch by focusing the last processed node
+				log.Trace().Msgf("Scrolling to last processed node: %v", lastNode.NodeID)
+				if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
+					log.Debug().Msgf("error scrolling to next batch of items: %v", err)
 				}
+			}
 
-				if batchProcessing {
-					// Constrained by finding new files to download, let's get a whole batch to process
+			if err := chromedp.Nodes(photoNodeSelector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
+				return fmt.Errorf("error finding photo nodes, %w", err)
+			}
+			log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
 
-					if retries == 0 {
-						// start by scrolling to the next batch by focusing the last processed node
-						log.Trace().Msgf("Scrolling to last processed node: %v", lastNode.NodeID)
-						if err := doActionWithTimeout(ctx, dom.Focus().WithNodeID(lastNode.NodeID), 1000*time.Millisecond); err != nil {
-							log.Debug().Msgf("error scrolling to next batch of items: %v", err)
-						}
-					}
-
-					if err := chromedp.Nodes(photoNodeSelector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
-						return fmt.Errorf("error finding photo nodes, %w", err)
-					}
-					log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
-
-					// remove already processed nodes
-					foundNodes := len(nodes)
-					for i, node := range nodes {
-						if node == lastNode {
-							log.Trace().Msgf("Found %d nodes, %d have already been processed", len(nodes), i+1)
-							nodes = nodes[i+1:]
-							break
-						}
-					}
-					if len(nodes) == 0 {
-						retries++
-						continue
-					}
-					if foundNodes == len(nodes) {
-						log.Warn().Msg("only new nodes found, expected an overlap")
-					}
+			// remove already processed nodes
+			foundNodes := len(nodes)
+			for i, node := range nodes {
+				if node == lastNode {
+					log.Trace().Msgf("Found %d nodes, %d have already been processed", len(nodes), i+1)
+					nodes = nodes[i+1:]
+					break
 				}
-
-				if !batchProcessing {
-					// Constrained by downloads, just move one right
-					if err := chromedp.KeyEvent(kb.ArrowRight).Do(ctx); err != nil {
-						return fmt.Errorf("error sending right arrow key event, %w", err)
-					}
-					time.Sleep(1 * time.Millisecond)
-
-					log.Trace().Msg("Getting active element (if it's an A element with a photo href)")
-					if err := chromedp.Nodes(`document.activeElement`, &nodes, chromedp.ByJSPath).Do(ctx); err != nil {
-						return fmt.Errorf("error getting active element, %w", err)
-					}
-
-					if nodes[0].NodeName != "A" || nodes[0].AttributeValue("href") == lastHref {
-						log.Trace().Msg("didn't find new photo node, will try again")
-						time.Sleep(1 * time.Millisecond)
-						nodes = []*cdp.Node{}
-						retries++
-						continue
-					}
-				}
-
-				retries = 0
-				i = 0
 			}
-		}
-
-		lastNode = nodes[i]
-		n++
-		i++
-
-		href := lastNode.AttributeValue("href")
-		lastHref = href
-
-		imageId, err := imageIdFromUrl(href)
-		if err != nil {
-			return err
-		}
-		s.downloadedItems[imageId] = struct{}{}
-		ctxLog := log.With().Str("imageId", imageId).Logger()
-		ctxLog.Trace().Msgf("processing %v", imageId)
-
-		hasFiles, err := s.dirHasFiles(imageId)
-		if err != nil {
-			return err
-		} else if hasFiles {
-			ctxLog.Trace().Msgf("skipping %v, already downloaded", imageId)
-			continue
-		}
-
-		ariaLabel := ""
-		if jsNode, err := dom.ResolveNode().WithNodeID(lastNode.NodeID).Do(ctx); err != nil {
-			ctxLog.Err(err).Msgf("error resolving object id of node, %s", err.Error())
-		} else {
-			if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
-				func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
-					return p.WithObjectID(jsNode.ObjectID)
-				},
-			)); err != nil {
-				ctxLog.Err(err).Msgf("error reading node ariaLabel, %s", err.Error())
+			if len(nodes) == 0 {
+				retries++
+				continue
 			}
-			if ariaLabel != "" {
-				ariaLabel = "(" + ariaLabel + ")"
+			if foundNodes == len(nodes) {
+				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
+
+			retries = 0
+			i = 0
 		}
 
-		if strings.Contains(ariaLabel, "Highlight video") {
-			ctxLog.Info().Msgf("Skipping highlight video %v (%s)", imageId, ariaLabel)
-			continue
+		imageIds := []string{}
+
+		for i < len(nodes) && len(imageIds) < 10 {
+			lastNode = nodes[i]
+			i++
+			n++
+
+			imageId, err := imageIdFromUrl(lastNode.AttributeValue("href"))
+			if err != nil {
+				return fmt.Errorf("error getting image id from url, %w", err)
+			}
+			ctxLog := log.With().Str("imageId", imageId).Logger()
+
+			ariaLabel, err := s.getAriaLabel(ctx, ctxLog, lastNode)
+			if err != nil {
+				return err
+			}
+
+			shouldDownload, err := s.shouldDownload(ctxLog, imageId, ariaLabel)
+			if err != nil {
+				return err
+			} else if !shouldDownload {
+				break
+			}
+
+			ctxLog.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
+			imageIds = append(imageIds, imageId)
 		}
 
-		ctxLog.Info().Msgf("photo %v %s is missing. Downloading it.", imageId, ariaLabel)
-
-		dlErrChan := make(chan error, 1)
-		job := Job{imageId, dlErrChan}
-		jobChan <- job
-		asyncJobs = append(asyncJobs, job)
-		dlCnt++
-		inProgressCnt++
+		if len(imageIds) > 0 {
+			log.Debug().Msgf("Adding %d photos to queue", len(imageIds))
+			dlErrChan := make(chan error, 1)
+			job := Job{imageIds, dlErrChan}
+			jobChan <- job
+			asyncJobs = append(asyncJobs, job)
+			dlCnt += len(imageIds)
+		}
 	}
 	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%%", n, dlCnt, sliderPos*100)
 
 	if err := s.checkForRemovedFiles(ctx); err != nil {
 		return err
 	}
-	return s.processJobs(&asyncJobs, 0, nil)
+	return s.processJobs(&asyncJobs, 0)
+}
+
+func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cdp.Node) (string, error) {
+	ariaLabel := ""
+	if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
+		log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
+	} else {
+		if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
+			func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
+				return p.WithObjectID(jsNode.ObjectID)
+			},
+		)); err != nil {
+			log.Err(err).Msgf("error reading node ariaLabel, %s", err.Error())
+		}
+	}
+	return ariaLabel, nil
+}
+
+func (s *Session) shouldDownload(log zerolog.Logger, imageId, ariaLabel string) (bool, error) {
+	s.downloadedItems[imageId] = struct{}{}
+	log.Trace().Msgf("processing %v", imageId)
+
+	hasFiles, err := s.dirHasFiles(imageId)
+	if err != nil {
+		return false, err
+	} else if hasFiles {
+		log.Trace().Msgf("skipping item, already downloaded")
+		return false, nil
+	}
+
+	if strings.Contains(ariaLabel, "Highlight video") {
+		log.Info().Msgf("Skipping highlight video (%s)", ariaLabel)
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func (s *Session) downloadWorker(jobs <-chan Job) {
@@ -1681,41 +1648,63 @@ func (s *Session) downloadWorker(jobs <-chan Job) {
 	go func() {
 		defer cancel()
 		for job := range jobs {
-			log := log.With().Str("imageId", job.imageId).Logger()
-			location := gphotosUrl + s.photoRelPath + "/photo/" + job.imageId
+			for i, imageId := range job.imageIds {
+				log := log.With().Str("imageId", imageId).Logger()
+				location := gphotosUrl + s.photoRelPath + "/photo/" + imageId
 
-			ctx = SetContextData(ctx)
-			listenNavEvents(ctx)
+				ctx = SetContextData(ctx)
+				listenNavEvents(ctx)
 
-			log.Trace().Msgf("Navigating to %v", location)
-			resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
-			if err != nil {
-				job.errChan <- fmt.Errorf("error navigating to %v: %w", location, err)
-				return
-			}
-			if resp.Status == http.StatusOK {
-				if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
-					job.errChan <- fmt.Errorf("error waiting for body: %w", err)
+				if i == 0 {
+					log.Trace().Msgf("Navigating to %v", location)
+					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+					if err != nil {
+						job.errChan <- fmt.Errorf("error navigating to %v: %w", location, err)
+						return
+					}
+					if resp.Status == http.StatusOK {
+						if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
+							job.errChan <- fmt.Errorf("error waiting for body: %w", err)
+							return
+						}
+					} else {
+						job.errChan <- fmt.Errorf("unexpected response: %v", resp.Status)
+						return
+					}
+				} else {
+					// pressing right arrow to navigate to sequential item
+					log.Trace().Msgf("Navigating to %v by right arrow press", location)
+					if err := chromedp.Run(ctx,
+						chromedp.KeyEvent(kb.ArrowRight),
+						chromedp.Sleep(200*time.Millisecond),
+						chromedp.Location(&location),
+						chromedp.ActionFunc(
+							func(ctx context.Context) error {
+								if location != gphotosUrl+s.photoRelPath+"/photo/"+imageId {
+									return fmt.Errorf("expected location %s, got %s", gphotosUrl+s.photoRelPath+"/photo/"+imageId, location)
+								}
+								return nil
+							},
+						)); err != nil {
+						job.errChan <- fmt.Errorf("error navigating to sequential item %s: %w", imageId, err)
+						return
+					}
+				}
+
+				time.Sleep(200 * time.Millisecond)
+
+				err := chromedp.Run(ctx, chromedp.ActionFunc(
+					func(ctx context.Context) error {
+						return s.downloadAndProcessItem(ctx, log, imageId)
+					},
+				))
+				if err != nil {
+					job.errChan <- err
 					return
 				}
-			} else {
-				job.errChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-				return
 			}
-
-			time.Sleep(200 * time.Millisecond)
-
-			err = chromedp.Run(ctx, chromedp.ActionFunc(
-				func(ctx context.Context) error {
-					errChan := make(chan error, 1)
-					s.downloadAndProcessItem(ctx, log, job.imageId, errChan)
-					return <-errChan
-				},
-			))
-			job.errChan <- err
-			if err != nil {
-				return
-			}
+			job.errChan <- nil
+			log.Info().Msgf("Finished processing %d photos", len(job.imageIds))
 		}
 	}()
 }
@@ -1772,13 +1761,10 @@ func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) processJobs(jobs *[]Job, maxJobs int, dlCount *int) error {
+func (s *Session) processJobs(jobs *[]Job, maxJobs int) error {
 	n := 0
-	if dlCount == nil {
-		dlCount = new(int)
-	}
 	for {
-		*dlCount = 0
+		dlCount := 0
 		for i := range *jobs {
 			if (*jobs)[i].errChan == nil {
 				continue
@@ -1803,15 +1789,15 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int, dlCount *int) error {
 			}
 
 			if (*jobs)[i].errChan != nil {
-				*dlCount++
+				dlCount++
 			}
 		}
 
-		if *dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
-			log.Info().Msgf("%d download jobs currently in progress", *dlCount)
+		if dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
+			log.Info().Msgf("%d download jobs currently in progress", dlCount)
 		}
 
-		if *dlCount <= maxJobs || maxJobs != 0 {
+		if dlCount <= maxJobs || maxJobs != 0 {
 			break
 		}
 
