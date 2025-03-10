@@ -1506,7 +1506,7 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 		}
 
-		if err := s.processJobs(&asyncJobs, *workersFlag-1); err != nil {
+		if err := s.processJobs(&asyncJobs, false); err != nil {
 			if err == errPhotoTakenBeforeFromDate {
 				log.Info().Msg("Found photo taken before -from date, stopping sync here")
 				break
@@ -1604,7 +1604,7 @@ func (s *Session) resync(ctx context.Context) error {
 	if err := s.checkForRemovedFiles(ctx); err != nil {
 		return err
 	}
-	return s.processJobs(&asyncJobs, 0)
+	return s.processJobs(&asyncJobs, true)
 }
 
 func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cdp.Node) (string, error) {
@@ -1761,7 +1761,7 @@ func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) processJobs(jobs *[]Job, maxJobs int) error {
+func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 	n := 0
 	for {
 		dlCount := 0
@@ -1778,7 +1778,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int) error {
 					log.Info().Msg("Skipping generated highlight video that Google seems to have lost")
 				} else if err == errPhotoTakenAfterToDate {
 					log.Warn().Msg("Skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
-				} else if err == errPhotoTakenBeforeFromDate && maxJobs == 0 {
+				} else if err == errPhotoTakenBeforeFromDate && waitForAll {
 					log.Info().Msgf("Skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 				} else if err != nil {
 					return err
@@ -1797,7 +1797,7 @@ func (s *Session) processJobs(jobs *[]Job, maxJobs int) error {
 			log.Info().Msgf("%d download jobs currently in progress", dlCount)
 		}
 
-		if dlCount <= maxJobs || maxJobs != 0 {
+		if dlCount == 0 || !waitForAll {
 			break
 		}
 
