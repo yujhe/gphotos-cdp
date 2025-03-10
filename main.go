@@ -332,7 +332,11 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 	s.parentContext = ctx
 	s.parentCancel = cancel
 
-	ctx, cancel = chromedp.NewContext(s.parentContext)
+	ctx, cancel = chromedp.NewContext(s.parentContext,
+		chromedp.WithLogf(s.cdpLog),
+		chromedp.WithDebugf(s.cdpDebug),
+		chromedp.WithErrorf(s.cdpError),
+	)
 	ctx = SetContextData(ctx)
 
 	if err := chromedp.Run(ctx,
@@ -353,6 +357,22 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 
 func (s *Session) Shutdown() {
 	s.parentCancel()
+}
+
+func (s *Session) cdpLog(format string, v ...any) {
+	log.Debug().Msgf(format, v...)
+}
+
+func (s *Session) cdpDebug(format string, v ...any) {
+	log.Trace().Msgf(format, v...)
+}
+
+func (s *Session) cdpError(format string, v ...any) {
+	if strings.Contains(format, "unhandled") && strings.Contains(format, "event") {
+		log.Debug().Msgf(format, v...)
+	} else {
+		log.Error().Msgf(format, v...)
+	}
 }
 
 // cleanDlDir removes all files (but not directories) from s.dlDir
