@@ -44,3 +44,49 @@ en:
     - "Thu"
     - "Fri"
     - "Sat"
+nl:
+  selectAllPhotosLabel:
+    matchType: startsWith
+    matchValue: "Alle foto's van"
+  fileNameLabel:
+    matchType: startsWith
+    matchValue: "Bestandsnaam:"
+  dateLabel:
+    matchType: startsWith
+    matchValue: "Fotodatum:"
+  today: "Vandaag"
+  yesterday: "Gisteren"
+  timeLabel:
+    matchType: startsWith
+    matchValue: "Tijdsduur:"
+  tzLabel:
+    matchType: startsWith
+    matchValue: "GMT"
+  viewPreviousPhotoMatch:
+    matchType: equals
+    matchValue: "Vorige foto bekijken"
+  moreOptionsLabel:
+    matchType: equals
+    matchValue: "Meer opties"
+  downloadLabel:
+    matchType: equals
+    matchValue: "Downloaden - Shift+D"
+  downloadOriginalLabel:
+    matchType: equals
+    matchValue: "Download original"
+  openInfoMatch:
+    matchType: equals
+    matchValue: "Info openen"
+  videoStillProcessingDialogLabel:
+    matchType: startsWith
+    matchValue: "Video still is processing"
+  videoStillProcessingStatusText: "Video is still processing &amp; can be downloaded later"
+  noWebpageFoundText: "No webpage was found for the web address:"
+  shortDayNames:
+    - "Zo"
+    - "Ma"
+    - "Di"
+    - "Wo"
+    - "Do"
+    - "Vr"
+    - "Za"

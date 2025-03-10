@@ -97,6 +97,27 @@ func initLocales() error {
 		}
 	}
 
+	if _, exists := locales["nl"]; !exists {
+		locales["nl"] = GPhotosLocale{
+			SelectAllPhotosLabel:            NodeLabelMatch{"startsWith", "Alle foto's van"},
+			FileNameLabel:                   NodeLabelMatch{"startsWith", "Bestandsnaam:"},
+			DateLabel:                       NodeLabelMatch{"startsWith", "Fotodatum:"},
+			Today:                           "Vandaag",
+			Yesterday:                       "Gisteren",
+			TimeLabel:                       NodeLabelMatch{"startsWith", "Tijdsduur:"},
+			TzLabel:                         NodeLabelMatch{"startsWith", "GMT"},
+			ViewPreviousPhotoMatch:          NodeLabelMatch{"equals", "Vorige foto bekijken"},
+			MoreOptionsLabel:                NodeLabelMatch{"equals", "Meer opties"},
+			DownloadLabel:                   NodeLabelMatch{"equals", "Downloaden - Shift+D"},
+			DownloadOriginalLabel:           NodeLabelMatch{"equals", "Download original"},
+			OpenInfoMatch:                   NodeLabelMatch{"equals", "Info openen"},
+			VideoStillProcessingDialogLabel: NodeLabelMatch{"startsWith", "Video still is processing"},
+			VideoStillProcessingStatusText:  "Video is still processing &amp; can be downloaded later",
+			NoWebpageFoundText:              "No webpage was found for the web address:",
+			ShortDayNames:                   []string{"Zo", "Ma", "Di", "Wo", "Do", "Vr", "Za"},
+		}
+	}
+
 	return nil
 }
 

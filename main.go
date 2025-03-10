@@ -178,12 +178,12 @@ func main() {
 	}
 
 	initLocales()
-	var exists bool
-	loc, exists = locales[locale]
+	_loc, exists := locales[locale]
 	if !exists {
 		log.Warn().Msgf("Your Google account is using unsupported locale %s, this is likely to cause issues. Please change account language to English (en) or another supported locale", locale)
 	} else {
 		log.Info().Msgf("Using locale %s", locale)
+		loc = _loc
 	}
 	dateParserCfg.Locales = []string{locale}
 
