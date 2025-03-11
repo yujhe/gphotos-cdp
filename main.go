@@ -1477,7 +1477,7 @@ func (s *Session) resync(ctx context.Context) error {
 		return nil
 	}
 
-	jobChan := make(chan Job)
+	jobChan := make(chan Job, *workersFlag)
 	for i := range *workersFlag {
 		s.downloadWorker(i+1, jobChan)
 	}
