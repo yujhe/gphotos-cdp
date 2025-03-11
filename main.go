@@ -554,7 +554,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 		bisectBounds := []float64{0.0, 1.0}
 		scrollPos := 0.0
-		var foundDateNode *cdp.Node
+		var foundDateNode, matchedNode *cdp.Node
 		for range 100 {
 			scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
 			log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
@@ -581,7 +581,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 					break
 				}
 			}
-			log.Trace().Msgf("scroll position: %.2f%%", scrollPos*100)
+			log.Trace().Msgf("scroll position: %.4f%%", scrollPos*100)
 
 			var dateNodes []*cdp.Node
 			for range 20 {
@@ -599,7 +599,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			}
 
 			var closestDateNode *cdp.Node
-			var closestDateDiff float64
+			var closestDateDiff int
 			var knownFirstOccurance bool
 			for i, n := range dateNodes {
 				if n.NodeName != "DIV" || n.ChildNodeCount == 0 {
@@ -631,21 +631,28 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 						return fmt.Errorf("could not parse date %s: %w", dateStr, err)
 					}
 				}
-				diff := dt.Sub(startDate).Hours()
-				log.Trace().Msgf("parsed date element %v with distance %d days", dt.Time, int(diff/24))
-				if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
+				diff := int(dt.Sub(startDate).Hours())
+				log.Trace().Msgf("parsed date element %v with distance %d days", dt, diff/24)
+				if closestDateNode == nil || absInt(diff) < absInt(closestDateDiff) {
 					closestDateNode = n
 					closestDateDiff = diff
-					knownFirstOccurance = i > 0
+					knownFirstOccurance = i > 0 || scrollPos <= 0.001
+					if knownFirstOccurance {
+						break
+					}
 				}
 			}
 
-			if closestDateDiff == 0 && closestDateNode != nil {
+			if int(closestDateDiff/24) != 0 && matchedNode != nil {
+				foundDateNode = matchedNode
+				break
+			} else if int(closestDateDiff/24) == 0 && closestDateNode != nil {
 				if knownFirstOccurance {
 					foundDateNode = closestDateNode
 					break
 				} else {
-					bisectBounds[1] = scrollPos
+					matchedNode = closestDateNode
+					bisectBounds[1] = (scrollPos + bisectBounds[1]*3) / 4
 				}
 			} else if closestDateDiff > 0 {
 				bisectBounds[0] = scrollPos
@@ -656,7 +663,9 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		log.Debug().Msgf("final scroll position: %.2f%%", scrollPos*100)
+		log.Debug().Msgf("final scroll position: %.4f%%", scrollPos*100)
+
+		time.Sleep(1000 * time.Millisecond)
 
 		if foundDateNode == nil {
 			return errors.New("could not find -start date")
@@ -1455,9 +1464,10 @@ func (s *Session) resync(ctx context.Context) error {
 
 	log.Trace().Msgf("finding start node")
 	opts := []chromedp.QueryOption{chromedp.ByQuery, chromedp.AtLeast(0)}
-	if s.startNodeParent != nil {
-		opts = append(opts, chromedp.FromNode(s.startNodeParent))
-	}
+	// if s.startNodeParent != nil {
+	// 	opts = append(opts, chromedp.FromNode(s.startNodeParent))
+	// 	dom.Focus().WithNodeID(s.startNodeParent.NodeID).Do(ctx)
+	// }
 
 	if err := chromedp.Nodes(photoNodeSelector, &nodes, opts...).Do(ctx); err != nil {
 		return fmt.Errorf("error finding photo nodes, %w", err)
@@ -1713,7 +1723,14 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 						return s.downloadAndProcessItem(ctx, log, imageId)
 					},
 				))
-				if err != nil {
+				if err == errStillProcessing {
+					// Old highlight videos are no longer available
+					log.Info().Msg("skipping generated highlight video that Google seems to have lost")
+				} else if err == errPhotoTakenAfterToDate {
+					log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
+					// } else if err == errPhotoTakenBeforeFromDate {
+					// 	log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
+				} else if err != nil {
 					job.errChan <- err
 					return
 				}
@@ -1786,12 +1803,7 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 			select {
 			case err := <-(*jobs)[i].errChan:
 				(*jobs)[i].errChan = nil
-				if err == errStillProcessing {
-					// Old highlight videos are no longer available
-					log.Info().Msg("skipping generated highlight video that Google seems to have lost")
-				} else if err == errPhotoTakenAfterToDate {
-					log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
-				} else if err == errPhotoTakenBeforeFromDate && waitForAll {
+				if err == errPhotoTakenBeforeFromDate && waitForAll {
 					log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 				} else if err != nil {
 					return err
