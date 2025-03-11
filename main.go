@@ -1441,19 +1441,7 @@ func (s *Session) resync(ctx context.Context) error {
 	retries := 0 // number of subsequent failed attempts to find new items to download
 	sliderPos := 0.0
 	estimatedRemaining := 1000
-	var photoNodeSelector string
-	nodeHrefPrefix := s.photoRelPath
-
-	if strings.HasPrefix(nodeHrefPrefix, "/u/") {
-		nodeHrefPrefix = nodeHrefPrefix[3:]
-		a := strings.Index(nodeHrefPrefix, "/")
-		if a == -1 {
-			nodeHrefPrefix = ""
-		} else {
-			nodeHrefPrefix = nodeHrefPrefix[a:]
-		}
-	}
-	photoNodeSelector = fmt.Sprintf(`a[href^=".%s/photo/"]`, nodeHrefPrefix)
+	photoNodeSelector := getPhotoNodeSelector(s.photoRelPath)
 
 	log.Trace().Msgf("Finding start node")
 	opts := []chromedp.QueryOption{chromedp.ByQuery, chromedp.AtLeast(0)}
@@ -1467,9 +1455,6 @@ func (s *Session) resync(ctx context.Context) error {
 	if len(nodes) == 0 {
 		log.Info().Msg("No photos to resync")
 		return nil
-	}
-	if err := dom.Focus().WithNodeID(nodes[0].NodeID).Do(ctx); err != nil {
-		return fmt.Errorf("error focusing first photo node, %w", err)
 	}
 
 	jobChan := make(chan Job)
@@ -1659,7 +1644,30 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 				ctx = SetContextData(ctx)
 				listenNavEvents(ctx)
 
-				if i == 0 {
+				navigateToExpectedUrl := false
+				if i > 0 {
+					// pressing right arrow to navigate to sequential item
+					log.Trace().Msgf("Navigating to %v by right arrow press", location)
+					if err := chromedp.Run(ctx,
+						chromedp.KeyEvent(kb.ArrowRight),
+						chromedp.Sleep(200*time.Millisecond),
+						chromedp.Location(&location),
+						chromedp.ActionFunc(
+							func(ctx context.Context) error {
+								if location != gphotosUrl+s.photoRelPath+"/photo/"+imageId {
+									log.Error().Msgf("after nav to right, expected location %s, got %s", gphotosUrl+s.photoRelPath+"/photo/"+imageId, location)
+								} else {
+									navigateToExpectedUrl = true
+								}
+								return nil
+							},
+						)); err != nil {
+						job.errChan <- fmt.Errorf("error navigating to sequential item %s: %w", imageId, err)
+						return
+					}
+				}
+
+				if !navigateToExpectedUrl {
 					log.Trace().Msgf("Navigating to %v", location)
 					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
 					if err != nil {
@@ -1673,24 +1681,6 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 						}
 					} else {
 						job.errChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-						return
-					}
-				} else {
-					// pressing right arrow to navigate to sequential item
-					log.Trace().Msgf("Navigating to %v by right arrow press", location)
-					if err := chromedp.Run(ctx,
-						chromedp.KeyEvent(kb.ArrowRight),
-						chromedp.Sleep(200*time.Millisecond),
-						chromedp.Location(&location),
-						chromedp.ActionFunc(
-							func(ctx context.Context) error {
-								if location != gphotosUrl+s.photoRelPath+"/photo/"+imageId {
-									return fmt.Errorf("expected location %s, got %s", gphotosUrl+s.photoRelPath+"/photo/"+imageId, location)
-								}
-								return nil
-							},
-						)); err != nil {
-						job.errChan <- fmt.Errorf("error navigating to sequential item %s: %w", imageId, err)
 						return
 					}
 				}
@@ -1796,7 +1786,7 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 		}
 
 		if dlCount > 0 && timedLogReady("processJobs", 90*time.Second) {
-			log.Info().Msgf("%d download jobs currently in progress", dlCount)
+			log.Info().Msgf("%d download jobs currently queued or in progress", dlCount)
 		}
 
 		if dlCount == 0 || !waitForAll {
@@ -1916,4 +1906,17 @@ func (s *Session) dirHasFiles(imageId string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func getPhotoNodeSelector(nodeHrefPrefix string) string {
+	if strings.HasPrefix(nodeHrefPrefix, "/u/") {
+		nodeHrefPrefix = nodeHrefPrefix[3:]
+		a := strings.Index(nodeHrefPrefix, "/")
+		if a == -1 {
+			nodeHrefPrefix = ""
+		} else {
+			nodeHrefPrefix = nodeHrefPrefix[a:]
+		}
+	}
+	return fmt.Sprintf(`a[href^=".%s/photo/"]`, nodeHrefPrefix)
 }
