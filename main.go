@@ -1492,14 +1492,12 @@ func (s *Session) resync(ctx context.Context) error {
 			break
 		}
 
-		if n < 30 || n%40 == 0 {
-			var err error
-			sliderPos, _, err = getSliderPosAndText(ctx)
-			if err != nil {
-				return fmt.Errorf("error getting slider position and text, %w", err)
-			}
-			log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
+		var err error
+		sliderPos, _, err = getSliderPosAndText(ctx)
+		if err != nil {
+			return fmt.Errorf("error getting slider position and text, %w", err)
 		}
+		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
 		if err := s.processJobs(&asyncJobs, false); err != nil {
 			if err == errPhotoTakenBeforeFromDate {
@@ -1557,7 +1555,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 		imageIds := []string{}
 
-		for i < len(nodes) && len(imageIds) < 10 {
+		for i < len(nodes) && len(imageIds) < 20 {
 			lastNode = nodes[i]
 			i++
 			n++
