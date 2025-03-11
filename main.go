@@ -1299,8 +1299,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 	}()
 
 	for err := range errChan {
-		log.Trace().Msgf("downloadAndProcessItem: job result: %s", err)
 		jobsRemaining--
+		log.Trace().Msgf("downloadAndProcessItem: job result %s", err)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
@@ -1588,7 +1588,17 @@ func (s *Session) resync(ctx context.Context) error {
 			job := Job{imageIds, dlErrChan}
 
 			log.Trace().Msgf("queuing job with imageIds: %v", job.imageIds)
-			jobChan <- job
+		sendJobLoop:
+			for {
+				select {
+				case jobChan <- job:
+					break sendJobLoop
+				default:
+					time.Sleep(100 * time.Millisecond)
+					s.processJobs(&asyncJobs, false)
+				}
+			}
+			log.Trace().Msgf("queued job with imageIds: %v", job.imageIds)
 			asyncJobs = append(asyncJobs, job)
 		}
 
