@@ -1510,7 +1510,7 @@ func (s *Session) resync(ctx context.Context) error {
 		if n < 5 || sliderPos < 0.001 {
 			estimatedRemaining = 50
 		} else {
-			estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n)))
+			estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n+30)))
 		}
 
 		if timedLogReady("resyncLoop", 60*time.Second) {
@@ -1564,21 +1564,21 @@ func (s *Session) resync(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("error getting image id from url, %w", err)
 			}
-			ctxLog := log.With().Str("itemId", imageId).Logger()
+			log := log.With().Str("itemId", imageId).Logger()
 
-			ariaLabel, err := s.getAriaLabel(ctx, ctxLog, lastNode)
+			ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
 			if err != nil {
 				return err
 			}
 
-			shouldDownload, err := s.shouldDownload(ctxLog, imageId, ariaLabel)
+			shouldDownload, err := s.shouldDownload(log, imageId, ariaLabel)
 			if err != nil {
 				return err
 			} else if !shouldDownload {
 				break
 			}
 
-			ctxLog.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
+			log.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
 			imageIds = append(imageIds, imageId)
 		}
 
