@@ -988,10 +988,13 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
 	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
 	if err != nil && strings.HasSuffix(err.Error(), "unknown format") {
-		log.Err(err).Msg("dateparser failed with 'unknown format', sometimes trying again helps...")
-		cfg := dateParserCfg
-		cfg.Languages = []string{}
-		date, err = dateparser.Parse(&cfg, fullDateStr)
+		log.Err(err).Msg("dateparser failed with 'unknown format', often trying again helps...")
+		for range 10 {
+			date, err = dateparser.Parse(&dateParserCfg, fullDateStr)
+			if err == nil {
+				break
+			}
+		}
 	}
 	if err != nil {
 		return PhotoData{}, fmt.Errorf("getting photo data, %w", err)
@@ -1517,8 +1520,6 @@ func (s *Session) resync(ctx context.Context) error {
 		}
 
 		if n != 0 && i >= len(nodes) {
-			log.Debug().Msgf("finding new nodes to process")
-
 			if retries == 0 {
 				// start by scrolling to the next batch by focusing the last processed node
 				log.Trace().Msgf("Scrolling to last processed node: %v", lastNode.NodeID)
@@ -1530,7 +1531,7 @@ func (s *Session) resync(ctx context.Context) error {
 			if err := chromedp.Nodes(photoNodeSelector, &nodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
 				return fmt.Errorf("error finding photo nodes, %w", err)
 			}
-			log.Trace().Msgf("Checking %d nodes for new nodes", len(nodes))
+			log.Trace().Msgf("Found %d items, checking if any are new", len(nodes))
 
 			// remove already processed nodes
 			foundNodes := len(nodes)
@@ -1545,6 +1546,7 @@ func (s *Session) resync(ctx context.Context) error {
 				retries++
 				continue
 			}
+			log.Debug().Msgf("Found %d items, %d of which are new", len(nodes), len(nodes)-foundNodes)
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
