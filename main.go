@@ -376,7 +376,9 @@ func (s *Session) Shutdown() {
 }
 
 func (s *Session) cdpLog(format string, v ...any) {
-	log.Debug().Msgf(format, v...)
+	if !strings.Contains(format, "unhandled") && !strings.Contains(format, "event") {
+		log.Debug().Msgf(format, v...)
+	}
 }
 
 func (s *Session) cdpDebug(format string, v ...any) {
@@ -384,9 +386,7 @@ func (s *Session) cdpDebug(format string, v ...any) {
 }
 
 func (s *Session) cdpError(format string, v ...any) {
-	if strings.Contains(format, "unhandled") && strings.Contains(format, "event") {
-		log.Debug().Msgf(format, v...)
-	} else {
+	if !strings.Contains(format, "unhandled") && !strings.Contains(format, "event") {
 		log.Error().Msgf(format, v...)
 	}
 }
@@ -988,7 +988,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
 	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
 	if err != nil && strings.HasSuffix(err.Error(), "unknown format") {
-		log.Err(err).Msg("dateparser returned potentially spurious error, trying again with no language in cfg")
+		log.Err(err).Msg("dateparser failed with 'unknown format', sometimes trying again helps...")
 		cfg := dateParserCfg
 		cfg.Languages = []string{}
 		date, err = dateparser.Parse(&cfg, fullDateStr)
@@ -1234,17 +1234,16 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		data, err := s.getPhotoData(ctx)
 		if err != nil {
 			errChan <- err
+		} else if fromDate != (time.Time{}) && data.date.Before(fromDate) {
+			errChan <- errPhotoTakenBeforeFromDate
+		} else if toDate != (time.Time{}) && data.date.After(toDate) {
+			errChan <- errPhotoTakenAfterToDate
 		} else {
-			if fromDate != (time.Time{}) && data.date.Before(fromDate) {
-				errChan <- errPhotoTakenBeforeFromDate
-			}
-			if toDate != (time.Time{}) && data.date.After(toDate) {
-				errChan <- errPhotoTakenAfterToDate
-			}
-			// we need two of these if we are downloading an original
-			photoDataChan <- data
-			photoDataChan <- data
 			errChan <- nil
+
+			// we need two of these in case we are downloading an original
+			photoDataChan <- data
+			photoDataChan <- data
 		}
 	}()
 
@@ -1252,8 +1251,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		hasOriginal := false
 		dl, dlProgress, err := s.startDownload(ctx, log, imageId, false, &hasOriginal)
 		if err != nil {
-			log.Trace().Msgf("download of failed: %v", err)
-			dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+			log.Trace().Msgf("download failed: %v", err)
 			errChan <- err
 			hasOriginalChan <- false
 		} else {
@@ -1267,8 +1265,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			log := log.With().Bool("dlOriginal", true).Logger()
 			dl, dlProgress, err := s.startDownload(ctx, log, imageId, true, nil)
 			if err != nil {
-				log.Trace().Msgf("download of failed: %v", err)
-				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
+				log.Trace().Msgf("download of original failed: %v", err)
 				errChan <- err
 			} else {
 				errChan <- s.processDownload(log, dl, dlProgress, true, imageId, photoDataChan)
@@ -1282,6 +1279,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		for {
 			select {
 			case <-ctx.Done():
+				errChan <- ctx.Err()
+				close(errChan)
 				return
 			case <-time.After(60 * time.Second):
 				log.Trace().Msgf("downloadAndProcessItem(): waiting for %d jobs to finish", jobsRemaining)
@@ -1289,28 +1288,30 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		}
 	}()
 
-	for {
-		select {
-		case err := <-errChan:
-			log.Trace().Msgf("downloadAndProcessItem(): job result: %s", err)
-			jobsRemaining--
-			if err != nil {
-				// Error downloading original or generated image, remove files already downloaded
-				outDir, errTmp := s.makeOutDir(imageId)
-				if errTmp != nil {
-					log.Err(errTmp).Msg(errTmp.Error())
-				} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
-					log.Err(errTmp).Msg(errTmp.Error())
-				}
-				return err
+	for err := range errChan {
+		log.Trace().Msgf("downloadAndProcessItem(): job result: %s", err)
+		jobsRemaining--
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				dlScreenshot(ctx, filepath.Join(s.dlDir, "error"))
 			}
-			if jobsRemaining == 0 {
-				return nil
+
+			// Error downloading original or generated image, remove files already downloaded
+			outDir, errTmp := s.makeOutDir(imageId)
+			if errTmp != nil {
+				log.Err(errTmp).Msg(errTmp.Error())
+			} else if errTmp := os.RemoveAll(outDir); errTmp != nil {
+				log.Err(errTmp).Msg(errTmp.Error())
 			}
-		case <-ctx.Done():
-			return ctx.Err()
+			return err
+		}
+		if jobsRemaining == 0 {
+			return nil
 		}
 	}
+
+	// If we get here, the channel was closed but jobsRemaining > 0
+	return ctx.Err()
 }
 
 // handleZip handles the case where the currently item is a zip file. It extracts
@@ -1412,7 +1413,7 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 	if err := chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
 	(function() {
 		var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
-		return nodes.length > 0 ? (nodes[0].scrollTop+0.0001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.0001) : 0.0;
+		return nodes.length > 0 ? (nodes[0].scrollTop+0.000001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.000001) : 0.0;
 	})()`, mainSel), &sliderPos)); err != nil {
 		return 0, "", fmt.Errorf("couldn't calculate scroll position, %w", err)
 	}
@@ -1472,8 +1473,8 @@ func (s *Session) resync(ctx context.Context) error {
 	}
 
 	jobChan := make(chan Job)
-	for range *workersFlag {
-		s.downloadWorker(jobChan)
+	for i := range *workersFlag {
+		s.downloadWorker(i+1, jobChan)
 	}
 
 	for {
@@ -1498,12 +1499,13 @@ func (s *Session) resync(ctx context.Context) error {
 			break
 		}
 
-		if n < 10 || n%40 == 0 {
+		if n < 30 || n%40 == 0 {
 			var err error
 			sliderPos, _, err = getSliderPosAndText(ctx)
 			if err != nil {
 				return fmt.Errorf("error getting slider position and text, %w", err)
 			}
+			log.Trace().Msgf("Slider position: %.2f%%", sliderPos*100)
 		}
 
 		if err := s.processJobs(&asyncJobs, false); err != nil {
@@ -1514,7 +1516,7 @@ func (s *Session) resync(ctx context.Context) error {
 			return err
 		}
 
-		if n < 5 || sliderPos < 0.0001 {
+		if n < 5 || sliderPos < 0.001 {
 			estimatedRemaining = 50
 		} else {
 			estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n)))
@@ -1599,6 +1601,7 @@ func (s *Session) resync(ctx context.Context) error {
 			dlCnt += len(imageIds)
 		}
 	}
+	close(jobChan)
 	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%%", n, dlCnt, sliderPos*100)
 
 	if err := s.checkForRemovedFiles(ctx); err != nil {
@@ -1643,8 +1646,9 @@ func (s *Session) shouldDownload(log zerolog.Logger, imageId, ariaLabel string) 
 	return true, nil
 }
 
-func (s *Session) downloadWorker(jobs <-chan Job) {
+func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 	ctx, cancel := chromedp.NewContext(s.parentContext)
+	log := log.With().Int("workerId", workerId).Logger()
 	go func() {
 		defer cancel()
 		for job := range jobs {
@@ -1704,16 +1708,14 @@ func (s *Session) downloadWorker(jobs <-chan Job) {
 				}
 			}
 			job.errChan <- nil
-			log.Info().Msgf("Finished processing %d photos", len(job.imageIds))
+			log.Info().Msgf("Worker finished processing batch of %d photos", len(job.imageIds))
 		}
 	}()
 }
 
+// Check if there are folders in the dl dir that were not seen in gphotos
 func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 	if *removedFlag {
-		// Check if there are folders in the dl dir that were not seen in gphotos
-
-		// Create a map for O(1) lookups instead of using contains() which is O(n)
 		log.Info().Msg("Checking for removed files")
 		deleted := []string{}
 		for itemId := range s.existingItems {
