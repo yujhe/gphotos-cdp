@@ -1546,7 +1546,7 @@ func (s *Session) resync(ctx context.Context) error {
 				retries++
 				continue
 			}
-			log.Debug().Msgf("Found %d items, %d of which are new", len(nodes), len(nodes)-foundNodes)
+			log.Debug().Msgf("Found %d items, %d of which are new", foundNodes, len(nodes))
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
