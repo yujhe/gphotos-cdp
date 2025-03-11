@@ -31,7 +31,9 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,8 +55,6 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-
-	"github.com/spraot/go-dateparser"
 )
 
 var (
@@ -85,10 +85,6 @@ var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var fromDate time.Time
 var toDate time.Time
-var dateParserCfg dateparser.Configuration = dateparser.Configuration{
-	Languages:       []string{"en"},
-	DefaultTimezone: time.Local,
-}
 var loc GPhotosLocale
 
 func main() {
@@ -185,7 +181,6 @@ func main() {
 		log.Info().Msgf("using locale %s", locale)
 		loc = _loc
 	}
-	dateParserCfg.Locales = []string{locale}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
@@ -559,7 +554,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 		bisectBounds := []float64{0.0, 1.0}
 		scrollPos := 0.0
-		var foundDateNode *cdp.Node
+		var foundDateNode, matchedNode *cdp.Node
 		for range 100 {
 			scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
 			log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
@@ -611,11 +606,32 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 					continue
 				}
 				dateStr := n.Children[0].NodeValue
-				dpt, err := dateparser.Parse(&dateParserCfg, dateStr)
-				if err != nil {
-					return fmt.Errorf("could not parse date %s: %w", dateStr, err)
+				var dt time.Time
+				// Handle special days like "Yesterday" and "Today"
+				today := time.Now()
+				today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
+				for i := range 6 {
+					dtTmp := today.AddDate(0, 0, -i)
+					dayStr := loc.LongDayNames[dtTmp.Weekday()]
+					if i == 0 {
+						dayStr = loc.Today
+					} else if i == 1 {
+						dayStr = loc.Yesterday
+					}
+					if strings.EqualFold(dayStr, dateStr) {
+						dt = dtTmp
+						break
+					}
 				}
-				diff := dpt.Time.Sub(startDate).Hours()
+
+				if dt == (time.Time{}) {
+					var err error
+					dt, err = parseDate(dateStr, "", "")
+					if err != nil {
+						return fmt.Errorf("could not parse date %s: %w", dateStr, err)
+					}
+				}
+				diff := dt.Sub(startDate).Hours()
 				log.Trace().Msgf("parsed date element %v with distance %d days", dpt.Time, int(diff/24))
 				if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
 					closestDateNode = n
@@ -981,28 +997,14 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 	log.Trace().Msgf("parsing date: %v and time: %v", dateStr, timeStr)
 	log.Trace().Msgf("parsing filename: %v", filename)
-
-	// Handle special days like "Yesterday" and "Today"
-	timeStr = strings.Replace(timeStr, loc.Yesterday, loc.ShortDayNames[time.Now().AddDate(0, 0, -1).Weekday()], -1)
-	timeStr = strings.Replace(timeStr, loc.Today, loc.ShortDayNames[time.Now().Weekday()], -1)
-	fullDateStr := onlyPrintable(dateStr + ", " + timeStr + " " + tzStr)
-	date, err := dateparser.Parse(&dateParserCfg, fullDateStr)
-	if err != nil && strings.HasSuffix(err.Error(), "unknown format") {
-		log.Err(err).Msg("dateparser failed with 'unknown format', often trying again helps...")
-		for range 10 {
-			date, err = dateparser.Parse(&dateParserCfg, fullDateStr)
-			if err == nil {
-				break
-			}
-		}
-	}
+	dt, err := parseDate(dateStr, timeStr, tzStr)
 	if err != nil {
-		return PhotoData{}, fmt.Errorf("getting photo data, %w", err)
+		return PhotoData{}, fmt.Errorf("parsing date, %w", err)
 	}
 
-	log.Debug().Msgf("found date: %v and original filename: %v", date, filename)
+	log.Debug().Msgf("found date: %v and original filename: %v", dt, filename)
 
-	return PhotoData{date.Time, filename}, nil
+	return PhotoData{dt, filename}, nil
 }
 
 var dlLock sync.Mutex = sync.Mutex{}
@@ -1936,4 +1938,82 @@ func getPhotoNodeSelector(nodeHrefPrefix string) string {
 		}
 	}
 	return fmt.Sprintf(`a[href^=".%s/photo/"]`, nodeHrefPrefix)
+}
+
+// compiled year regex
+var yearRegex = regexp.MustCompile(`\d{4}`)
+var dayRegex = regexp.MustCompile(`\d{1,2}`)
+var timeRegex = regexp.MustCompile(`(\d{1,2}):(\d\d)(?::\d\d)?\s?([aApP][Mm])?`)
+var timeZoneRegex = regexp.MustCompile(`GMT([-+])?(\d{1,2})(?::(\d\d))?`)
+
+func parseDate(dateStr, timeStr, tzStr string) (time.Time, error) {
+	var year, month, day, hour, minute int
+	yearStr := yearRegex.FindString(dateStr)
+	if yearStr != "" {
+		year, _ = strconv.Atoi(yearStr)
+		dateStr = strings.Replace(dateStr, yearStr, "", 1)
+	} else {
+		year = time.Now().Year()
+	}
+	log.Trace().Msgf("parsed year: %d, dateStr: %s", year, dateStr)
+
+	dayStr := dayRegex.FindString(dateStr)
+	if dayStr != "" {
+		day, _ = strconv.Atoi(dayStr)
+	}
+	dateStr = strings.Replace(dateStr, dayStr, "", 1)
+
+	for i, v := range loc.ShortMonthNames {
+		if strings.Contains(strings.ToUpper(dateStr), strings.ToUpper(v)) {
+			month = i + 1
+			break
+		}
+	}
+	if month == 0 {
+		return time.Time{}, fmt.Errorf("could not find month in string %s", dateStr)
+	}
+	log.Trace().Msgf("parsed month: %d, dateStr: %s", month, dateStr)
+
+	if timeStr != "" {
+		timeMatch := timeRegex.FindStringSubmatch(timeStr)
+		if timeMatch == nil {
+			return time.Time{}, fmt.Errorf("could not find time in string %s", timeStr)
+		}
+		hour, _ = strconv.Atoi(timeMatch[1])
+		minute, _ = strconv.Atoi(timeMatch[2])
+		if strings.EqualFold(timeMatch[3], "pm") && hour < 12 {
+			hour += 12
+		}
+		if strings.EqualFold(timeMatch[3], "am") && hour == 12 {
+			hour = 0
+		}
+	}
+
+	// read time zone from timezoneStr in format GMT-05:00
+	var timeZone *time.Location
+	timeZoneStr := strings.Trim(tzStr, " ")
+	if timeZoneStr != "" {
+		timeZoneMatch := timeZoneRegex.FindStringSubmatch(timeZoneStr)
+		if timeZoneMatch != nil {
+			tzHour, _ := strconv.Atoi(timeZoneMatch[2])
+			tzMinute, _ := strconv.Atoi(timeZoneMatch[3])
+			offset := tzHour*60*60 + tzMinute*60
+			if timeZoneMatch[1] == "-" {
+				offset = -offset
+			}
+			timeZone = time.FixedZone("", offset)
+		} else {
+			return time.Time{}, fmt.Errorf("could not parse time zone in string %s", timeZoneStr)
+		}
+	} else {
+		timeZone = time.Local
+	}
+	return time.Date(year, time.Month(month), day, hour, minute, 0, 0, timeZone), nil
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
