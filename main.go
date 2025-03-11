@@ -554,7 +554,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 
 		bisectBounds := []float64{0.0, 1.0}
 		scrollPos := 0.0
-		var foundDateNode, matchedNode *cdp.Node
+		var foundDateNode *cdp.Node
 		for range 100 {
 			scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
 			log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
@@ -632,7 +632,7 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 					}
 				}
 				diff := dt.Sub(startDate).Hours()
-				log.Trace().Msgf("parsed date element %v with distance %d days", dpt.Time, int(diff/24))
+				log.Trace().Msgf("parsed date element %v with distance %d days", dt.Time, int(diff/24))
 				if closestDateNode == nil || math.Abs(diff) < math.Abs(closestDateDiff) {
 					closestDateNode = n
 					closestDateDiff = diff
