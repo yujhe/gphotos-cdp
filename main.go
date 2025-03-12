@@ -1670,7 +1670,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 			log.Trace().Msgf("starting job with imageIds: %v", job.imageIds)
 			for i, imageId := range job.imageIds {
 				log := log.With().Str("itemId", imageId).Logger()
-				location := gphotosUrl + s.photoRelPath + "/photo/" + imageId
+				expectedLocation := gphotosUrl + s.photoRelPath + "/photo/" + imageId
 
 				ctx = SetContextData(ctx)
 				listenNavEvents(ctx)
@@ -1678,31 +1678,38 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 				navigateToExpectedUrl := false
 				if i > 0 {
 					// pressing right arrow to navigate to sequential item
-					log.Trace().Msgf("navigating to %v by right arrow press", location)
-					if err := chromedp.Run(ctx,
+					log.Trace().Msgf("navigating to %v by right arrow press", expectedLocation)
+					var location string
+					c := chromedp.FromContext(ctx)
+					muTabActivity.Lock()
+					err := chromedp.Run(ctx,
+						target.ActivateTarget(c.Target.TargetID),
 						chromedp.KeyEvent(kb.ArrowRight),
-						chromedp.Sleep(200*time.Millisecond),
+						chromedp.Sleep(100*time.Millisecond),
 						chromedp.Location(&location),
 						chromedp.ActionFunc(
 							func(ctx context.Context) error {
-								if location != gphotosUrl+s.photoRelPath+"/photo/"+imageId {
-									log.Error().Msgf("after nav to right, expected location %s, got %s", gphotosUrl+s.photoRelPath+"/photo/"+imageId, location)
+								if location != expectedLocation {
+									log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
 								} else {
 									navigateToExpectedUrl = true
 								}
 								return nil
 							},
-						)); err != nil {
+						),
+					)
+					muTabActivity.Unlock()
+					if err != nil {
 						job.errChan <- fmt.Errorf("error navigating to sequential item %s: %w", imageId, err)
 						return
 					}
 				}
 
 				if !navigateToExpectedUrl {
-					log.Trace().Msgf("navigating to %v", location)
-					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(location))
+					log.Trace().Msgf("navigating to %v", expectedLocation)
+					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
 					if err != nil {
-						job.errChan <- fmt.Errorf("error navigating to %v: %w", location, err)
+						job.errChan <- fmt.Errorf("error navigating to %v: %w", expectedLocation, err)
 						return
 					}
 					if resp.Status == http.StatusOK {
@@ -1716,7 +1723,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 					}
 				}
 
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 
 				err := chromedp.Run(ctx, chromedp.ActionFunc(
 					func(ctx context.Context) error {
