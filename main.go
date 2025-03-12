@@ -250,9 +250,9 @@ type Session struct {
 }
 
 func NewSession() (*Session, error) {
-	var photoRelPath string
+	photoRelPath := ""
 	if *albumIdFlag != "" {
-		i := strings.LastIndex(photoRelPath, "/")
+		i := strings.LastIndex(*albumIdFlag, "/")
 		if i != -1 {
 			if *albumTypeFlag != "" {
 				log.Warn().Msgf("-albumtype argument is ignored because it looks like given album ID already contains a type: %v", *albumIdFlag)
