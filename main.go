@@ -841,40 +841,48 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, hasOriginal *bool) error {
 	log.Debug().Msgf("requesting download (method 2)")
 	originalSelector := getAriaLabelSelector(loc.DownloadOriginalLabel)
-	var selector string
+	var downloadSelector string
 	if original {
-		selector = originalSelector
+		downloadSelector = originalSelector
 	} else {
-		selector = getAriaLabelSelector(loc.DownloadLabel)
+		downloadSelector = getAriaLabelSelector(loc.DownloadLabel)
 	}
 
+	moreOptionsSelector := getAriaLabelSelector(loc.MoreOptionsLabel)
+
+	foundDownloadButton := false
 	i := 0
 	for {
 		muTabActivity.Lock()
-		ctxTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
-		c := chromedp.FromContext(ctx)
-		target.ActivateTarget(c.Target.TargetID).Do(ctx)
+		ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
 
 		err := chromedp.Run(ctxTimeout,
+			target.ActivateTarget(chromedp.FromContext(ctxTimeout).Target.TargetID),
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for more options menu to appear
-				var nodesTmp []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(getAriaLabelSelector(loc.MoreOptionsLabel), &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond); err != nil {
-					return fmt.Errorf("could not find 'more options' button due to %w", err)
+				if !foundDownloadButton {
+					var nodesTmp []*cdp.Node
+					if err := doActionWithTimeout(ctx, chromedp.Nodes(moreOptionsSelector, &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond); err != nil {
+						return fmt.Errorf("could not find 'more options' button due to %w", err)
+					}
+
+					// Open more options dialog
+					return chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop().click()`, nil).Do(ctx)
 				}
 				return nil
 			}),
 
-			// Open more options dialog
-			chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.MoreOptionsLabel)+`')].pop().click()`, nil),
-			// chromedp.Sleep(50*time.Millisecond),
+			chromedp.Sleep(5*time.Millisecond),
 
 			// Go to download button
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				// Wait for download button to appear
 				var nodesTmp []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodesTmp, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
-					return fmt.Errorf("waiting for 'download' button failed due to %w", err)
+				if !foundDownloadButton {
+					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond); err != nil {
+						return fmt.Errorf("waiting for 'download' button failed due to %w", err)
+					}
+					foundDownloadButton = true
 				}
 
 				// Check if there is an original version of the image that can also be downloaded
@@ -891,7 +899,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 			// Press down arrow until the right menu option is selected
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var nodes []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(selector, &nodes, chromedp.ByQuery), 1000*time.Millisecond); err != nil {
+				if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 2000*time.Millisecond); err != nil {
 					return fmt.Errorf("could not find 'download' button due to %w", err)
 				}
 
@@ -902,7 +910,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 						return errCouldNotPressDownloadButton
 					}
 					var style []*css.ComputedStyleProperty
-					if err := chromedp.ComputedStyle(selector, &style).Do(ctx); err != nil {
+					if err := chromedp.ComputedStyle(downloadSelector, &style).Do(ctx); err != nil {
 						return err
 					}
 
@@ -918,12 +926,15 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 
 			// Activate the selected action and wait a bit before continuing
 			chromedp.KeyEvent(kb.Enter),
+			chromedp.Sleep(5*time.Millisecond),
 		)
 		cancel()
 		muTabActivity.Unlock()
 
 		if err == nil {
 			break
+		} else if ctx.Err() != nil {
+			return ctx.Err()
 		} else if i > 5 {
 			log.Warn().Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
@@ -1019,7 +1030,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 var startDownloadLock sync.Mutex = sync.Mutex{}
 
 // startDownload starts the download of the currently viewed item. It returns
-// with an error if the download stops making any progress for more than a minute.
+// with an error if the download does not start within a minute.
 func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId string, isOriginal bool, hasOriginal *bool) (newDownload NewDownload, progressChan chan bool, err error) {
 	log.Trace().Msgf("entering startDownload()")
 
@@ -1176,7 +1187,7 @@ progressLoop:
 				downloadTimeout.Reset(time.Minute)
 			}
 		case <-downloadTimeout.C:
-			return fmt.Errorf("processDownload: timeout waiting for download to complete for %v", imageId)
+			return fmt.Errorf("timeout waiting for download to complete for %v", imageId)
 		}
 	}
 
@@ -1311,8 +1322,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 
 	for err := range errChan {
 		jobsRemaining--
-		log.Trace().Msgf("downloadAndProcessItem: job result %s", err)
 		if err != nil {
+			log.Trace().Msgf("downloadAndProcessItem: job result %s, %d jobs remaining", err.Error(), jobsRemaining)
 			if !errors.Is(err, context.Canceled) {
 				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 			}
@@ -1323,6 +1334,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			}
 
 			return err
+		} else {
+			log.Trace().Msgf("downloadAndProcessItem: job result done, %d jobs remaining", jobsRemaining)
 		}
 		if jobsRemaining == 0 {
 			return nil
@@ -1606,7 +1619,9 @@ func (s *Session) resync(ctx context.Context) error {
 					break sendJobLoop
 				default:
 					time.Sleep(100 * time.Millisecond)
-					s.processJobs(&asyncJobs, false)
+					if err := s.processJobs(&asyncJobs, false); err != nil {
+						return err
+					}
 				}
 			}
 			log.Trace().Msgf("queued job with itemIds: %s", strings.Join(job.imageIds, ", "))
@@ -1686,7 +1701,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 					err := chromedp.Run(ctx,
 						target.ActivateTarget(c.Target.TargetID),
 						chromedp.ActionFunc(navRight),
-						chromedp.Sleep(100*time.Millisecond),
+						chromedp.Sleep(50*time.Millisecond),
 						chromedp.Location(&location),
 						chromedp.ActionFunc(
 							func(ctx context.Context) error {
@@ -1739,6 +1754,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 					// } else if err == errPhotoTakenBeforeFromDate {
 					// 	log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 				} else if err != nil {
+					log.Trace().Msgf("downloadWorker: encountered error while processing batch item %d: %s", i, err.Error())
 					job.errChan <- err
 					return
 				}
@@ -1820,6 +1836,7 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 				if err == errPhotoTakenBeforeFromDate && waitForAll {
 					log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 				} else if err != nil {
+					log.Trace().Msgf("processJobs: received error from worker for job %d: %s", i, err.Error())
 					return err
 				}
 			case err := <-s.err:
@@ -1833,7 +1850,7 @@ func (s *Session) processJobs(jobs *[]Job, waitForAll bool) error {
 		}
 
 		if downloadCount > 0 && timedLogReady("processJobs", 90*time.Second) {
-			log.Info().Msgf("%d download jobs currently queued or in progress", downloadCount)
+			log.Info().Msgf("%d batch jobs currently queued or in progress", downloadCount)
 		}
 
 		if downloadCount == 0 || !waitForAll {
@@ -1888,40 +1905,40 @@ func startDownloadListener(ctx context.Context, newDownloadChan chan DownloadCha
 			if ev.SuggestedFilename == "downloads.html" {
 				return
 			}
-			if len(newDownloadChan) == 0 {
+			select {
+			case currentDownloads[ev.GUID] = <-newDownloadChan:
+			default:
 				globalErrChan <- fmt.Errorf("unexpected download of %s", ev.SuggestedFilename)
 			}
-			currentDownloads[ev.GUID] = <-newDownloadChan
-			currentDownloads[ev.GUID].downloadStarted <- NewDownload{ev.GUID, ev.SuggestedFilename}
+			go func() {
+				select {
+				case currentDownloads[ev.GUID].downloadStarted <- NewDownload{ev.GUID, ev.SuggestedFilename}:
+				default:
+					globalErrChan <- fmt.Errorf("unexpected download of %s for GUID %s", ev.SuggestedFilename, ev.GUID)
+				}
+			}()
 		}
 	})
 
 	chromedp.ListenBrowser(ctx, func(v interface{}) {
 		if ev, ok := v.(*browser.EventDownloadProgress); ok {
 			if ev.State == browser.DownloadProgressStateInProgress {
-				if len(currentDownloads[ev.GUID].downloadProgress) == 0 {
-					currentDownloads[ev.GUID].downloadProgress <- false
+				select {
+				case currentDownloads[ev.GUID].downloadProgress <- false:
+				default:
 				}
 			}
 			if ev.State == browser.DownloadProgressStateCompleted {
 				log.Trace().Str("GUID", ev.GUID).Msgf("received download completed event")
+				progressChan := currentDownloads[ev.GUID].downloadProgress
+				delete(currentDownloads, ev.GUID)
 				go func() {
-					time.Sleep(time.Second)
-					currentDownloads[ev.GUID].downloadProgress <- true
-					delete(currentDownloads, ev.GUID)
+					time.Sleep(1 * time.Millisecond)
+					progressChan <- true
 				}()
 			}
 		}
 	})
-}
-
-func onlyPrintable(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 32 && r <= 126 {
-			return r
-		}
-		return -1
-	}, s)
 }
 
 func getContentOfFirstVisibleNodeScript(sel string) string {
