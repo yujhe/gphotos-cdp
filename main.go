@@ -1492,10 +1492,6 @@ func (s *Session) resync(ctx context.Context) error {
 
 	log.Trace().Msgf("finding start node")
 	opts := []chromedp.QueryOption{chromedp.ByQuery, chromedp.AtLeast(0)}
-	// if s.startNodeParent != nil {
-	// 	opts = append(opts, chromedp.FromNode(s.startNodeParent))
-	// 	dom.Focus().WithNodeID(s.startNodeParent.NodeID).Do(ctx)
-	// }
 
 	if err := chromedp.Nodes(photoNodeSelector, &nodes, opts...).Do(ctx); err != nil {
 		return fmt.Errorf("error finding photo nodes, %w", err)
@@ -1583,7 +1579,7 @@ func (s *Session) resync(ctx context.Context) error {
 				retries++
 				continue
 			}
-			log.Debug().Msgf("found %d items, %d of which are new", foundNodes, len(nodes))
+			log.Debug().Msgf("found %d items, %d of which haven't been processed yet", foundNodes, len(nodes))
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
@@ -1605,15 +1601,20 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 			log := log.With().Str("itemId", imageId).Logger()
 
+			shouldDownload, err := s.isNewItem(log, imageId)
+			if err != nil {
+				return err
+			} else if !shouldDownload {
+				break
+			}
+
 			ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
 			if err != nil {
 				return err
 			}
 
-			shouldDownload, err := s.shouldDownload(log, imageId, ariaLabel)
-			if err != nil {
-				return err
-			} else if !shouldDownload {
+			if strings.Contains(ariaLabel, "Highlight video") {
+				log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
 				break
 			}
 
@@ -1669,7 +1670,7 @@ func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cd
 	return ariaLabel, nil
 }
 
-func (s *Session) shouldDownload(log zerolog.Logger, imageId, ariaLabel string) (bool, error) {
+func (s *Session) isNewItem(log zerolog.Logger, imageId string) (bool, error) {
 	s.foundItems[imageId] = struct{}{}
 	log.Trace().Msgf("processing %v", imageId)
 
@@ -1678,11 +1679,6 @@ func (s *Session) shouldDownload(log zerolog.Logger, imageId, ariaLabel string) 
 		return false, err
 	} else if hasFiles {
 		log.Trace().Msgf("skipping item, already downloaded")
-		return false, nil
-	}
-
-	if strings.Contains(ariaLabel, "Highlight video") {
-		log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
 		return false, nil
 	}
 
