@@ -1043,7 +1043,8 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	startDownloadLock.Lock()
 	defer startDownloadLock.Unlock()
-	timeout2 := time.NewTimer(90 * time.Second)
+	timeoutTimer := time.NewTimer(90 * time.Second)
+	var redoRequestTimer, refreshTimer *time.Timer
 
 	if len(s.nextDownload) != 0 {
 		return NewDownload{}, nil, errors.New("unexpected: nextDownload channel is not empty")
@@ -1062,17 +1063,23 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 		}
 	}()
 
-	if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
-		if isOriginal || err != errCouldNotPressDownloadButton {
-			return NewDownload{}, nil, err
-		} else if !isOriginal {
-			if err := requestDownload1(ctx, log); err != nil {
-				return NewDownload{}, nil, err
+	doRequest := func() error {
+		if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
+			if isOriginal || err != errCouldNotPressDownloadButton {
+				return err
+			} else if !isOriginal {
+				requestDownload1(ctx, log)
 			}
 		}
+		return nil
 	}
 
-	timeout1 := time.NewTimer(10 * time.Second)
+	if err := doRequest(); err != nil {
+		return NewDownload{}, nil, err
+	}
+
+	refreshTimer = time.NewTimer(4 * time.Second)
+	redoRequestTimer = time.NewTimer(100 * time.Second)
 
 	for {
 		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
@@ -1086,18 +1093,17 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 		}
 
 		select {
-		case <-timeout1.C:
-			if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
-				if isOriginal || err != errCouldNotPressDownloadButton {
-					return NewDownload{}, nil, err
-				} else if !isOriginal {
-					if err := requestDownload1(ctx, log); err != nil {
-						return NewDownload{}, nil, err
-					}
-				}
+		case <-redoRequestTimer.C:
+			if err := doRequest(); err != nil {
+				return NewDownload{}, nil, err
 			}
-			timeout1 = time.NewTimer(10 * time.Second)
-		case <-timeout2.C:
+			refreshTimer = time.NewTimer(4 * time.Second)
+		case <-refreshTimer.C:
+			if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
+				log.Error().Msgf("could not reload page due to %s", err.Error())
+			}
+			redoRequestTimer = time.NewTimer(4 * time.Second)
+		case <-timeoutTimer.C:
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadStartedChan:
 			log.Trace().Msgf("downloadStartedChan: %v", newDownload)
