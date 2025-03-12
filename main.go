@@ -132,7 +132,6 @@ func main() {
 		fromDate, err = time.Parse(time.DateOnly, *fromFlag)
 		if err != nil {
 			log.Fatal().Msgf("could not parse -from argument %s, must be YYYY-MM-DD", *fromFlag)
-			return
 		}
 	}
 	if *toFlag != "" {
@@ -141,7 +140,6 @@ func main() {
 		toDate = toDate.Add(time.Hour * 24)
 		if err != nil {
 			log.Fatal().Msgf("could not parse -to argument %s, must be YYYY-MM-DD", *toFlag)
-			return
 		}
 	}
 
@@ -186,14 +184,12 @@ func main() {
 		chromedp.ActionFunc(s.firstNav),
 	); err != nil {
 		log.Fatal().Msgf("failed to run first nav: %v", err)
-		return
 	}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.resync),
 	); err != nil {
 		log.Fatal().Msgf("failure during sync: %v", err)
-		return
 	}
 
 	log.Info().Msg("Done")
@@ -892,7 +888,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 					}
 
 					// Check if there is an original version of the image that can also be downloaded
-					if hasOriginal != nil {
+					if hasOriginal != nil && *hasOriginal == false {
 						var downloadOriginalNodes []*cdp.Node
 						if err := chromedp.Nodes(originalSelector, &downloadOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
 							return fmt.Errorf("checking for original version failed due to %w", err)
@@ -1044,7 +1040,8 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 	startDownloadLock.Lock()
 	defer startDownloadLock.Unlock()
 	timeoutTimer := time.NewTimer(90 * time.Second)
-	var redoRequestTimer, refreshTimer *time.Timer
+	refreshTimer := time.NewTimer(90 * time.Second)
+	requestTimer := time.NewTimer(0 * time.Second)
 
 	if len(s.nextDownload) != 0 {
 		return NewDownload{}, nil, errors.New("unexpected: nextDownload channel is not empty")
@@ -1063,46 +1060,23 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 		}
 	}()
 
-	doRequest := func() error {
-		if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
-			if isOriginal || err != errCouldNotPressDownloadButton {
-				return err
-			} else if !isOriginal {
-				requestDownload1(ctx, log)
-			}
-		}
-		return nil
-	}
-
-	if err := doRequest(); err != nil {
-		return NewDownload{}, nil, err
-	}
-
-	refreshTimer = time.NewTimer(4 * time.Second)
-	redoRequestTimer = time.NewTimer(100 * time.Second)
-
 	for {
-		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
-			log.Debug().Msgf("checking download status")
-		}
-
-		// Checking for gphotos warning that this video can't be downloaded (no known solution)
-		// This check only works for requestDownload2 method (not requestDownload1)
-		if err := s.checkForStillProcessing(ctx); err != nil {
-			return NewDownload{}, nil, err
-		}
-
 		select {
-		case <-redoRequestTimer.C:
-			if err := doRequest(); err != nil {
-				return NewDownload{}, nil, err
+		case <-requestTimer.C:
+			if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
+				if isOriginal || err != errCouldNotPressDownloadButton {
+					return NewDownload{}, nil, err
+				} else if !isOriginal {
+					requestDownload1(ctx, log)
+				}
 			}
-			refreshTimer = time.NewTimer(4 * time.Second)
+			refreshTimer = time.NewTimer(10 * time.Second)
 		case <-refreshTimer.C:
+			log.Debug().Msgf("reloading page because download failed to start")
 			if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
 				log.Error().Msgf("could not reload page due to %s", err.Error())
 			}
-			redoRequestTimer = time.NewTimer(4 * time.Second)
+			requestTimer = time.NewTimer(2 * time.Second)
 		case <-timeoutTimer.C:
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadStartedChan:
@@ -1110,6 +1084,16 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			return newDownload, downloadProgressChan, nil
 		default:
 			time.Sleep(25 * time.Millisecond)
+		}
+
+		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
+			log.Debug().Msgf("checking download start status")
+		}
+
+		// Checking for gphotos warning that this video can't be downloaded (no known solution)
+		// This check only works for requestDownload2 method (not requestDownload1)
+		if err := s.checkForStillProcessing(ctx); err != nil {
+			return NewDownload{}, nil, err
 		}
 	}
 }
