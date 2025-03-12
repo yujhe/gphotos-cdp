@@ -799,6 +799,7 @@ func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 	defer muTabActivity.Unlock()
 
 	log.Debug().Msgf("requesting download (method 1)")
+	target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
 		return err
 	}
@@ -853,83 +854,85 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 	foundDownloadButton := false
 	i := 0
 	for {
-		muTabActivity.Lock()
-		ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := func() error {
+			muTabActivity.Lock()
+			defer muTabActivity.Unlock()
+			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
 
-		err := chromedp.Run(ctxTimeout,
-			target.ActivateTarget(chromedp.FromContext(ctxTimeout).Target.TargetID),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				// Wait for more options menu to appear
-				if !foundDownloadButton {
-					var nodesTmp []*cdp.Node
-					if err := doActionWithTimeout(ctx, chromedp.Nodes(moreOptionsSelector, &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond); err != nil {
-						return fmt.Errorf("could not find 'more options' button due to %w", err)
-					}
-
-					// Open more options dialog
-					return chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop().click()`, nil).Do(ctx)
-				}
-				return nil
-			}),
-
-			chromedp.Sleep(5*time.Millisecond),
-
-			// Go to download button
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				// Wait for download button to appear
-				var nodesTmp []*cdp.Node
-				if !foundDownloadButton {
-					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodesTmp, chromedp.ByQuery), 2000*time.Millisecond); err != nil {
-						return fmt.Errorf("waiting for 'download' button failed due to %w", err)
-					}
-					foundDownloadButton = true
-				}
-
-				// Check if there is an original version of the image that can also be downloaded
-				if hasOriginal != nil {
-					var downloadOriginalNodes []*cdp.Node
-					if err := chromedp.Nodes(originalSelector, &downloadOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
-						return fmt.Errorf("checking for original version failed due to %w", err)
-					}
-					*hasOriginal = len(downloadOriginalNodes) > 0
-				}
-				return nil
-			}),
-
-			// Press down arrow until the right menu option is selected
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				var nodes []*cdp.Node
-				if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 2000*time.Millisecond); err != nil {
-					return fmt.Errorf("could not find 'download' button due to %w", err)
-				}
-
-				n := 0
-				for {
-					n++
-					if n > 30 {
-						return errCouldNotPressDownloadButton
-					}
-					var style []*css.ComputedStyleProperty
-					if err := chromedp.ComputedStyle(downloadSelector, &style).Do(ctx); err != nil {
-						return err
-					}
-
-					for _, s := range style {
-						if s.Name == "background-color" && !strings.Contains(s.Value, "0, 0, 0") {
-							return nil
+			return chromedp.Run(ctxTimeout,
+				target.ActivateTarget(chromedp.FromContext(ctxTimeout).Target.TargetID),
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					// Wait for more options menu to appear
+					if !foundDownloadButton {
+						var nodesTmp []*cdp.Node
+						if err := doActionWithTimeout(ctx, chromedp.Nodes(moreOptionsSelector, &nodesTmp, chromedp.ByQuery), 6000*time.Millisecond); err != nil {
+							return fmt.Errorf("could not find 'more options' button due to %w", err)
 						}
-					}
-					chromedp.KeyEventNode(nodes[0], kb.ArrowDown).Do(ctx)
-					time.Sleep(2 * time.Millisecond)
-				}
-			}),
 
-			// Activate the selected action and wait a bit before continuing
-			chromedp.KeyEvent(kb.Enter),
-			chromedp.Sleep(5*time.Millisecond),
-		)
-		cancel()
-		muTabActivity.Unlock()
+						// Open more options dialog
+						if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop().click()`, nil).Do(ctx); err != nil {
+							return fmt.Errorf("could not open 'more options' dialog due to %w", err)
+						}
+						time.Sleep(50 * time.Millisecond)
+					}
+					return nil
+				}),
+
+				// Go to download button
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					// Wait for download button to appear
+					var nodesTmp []*cdp.Node
+					if !foundDownloadButton {
+						if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodesTmp, chromedp.ByQuery), 5000*time.Millisecond); err != nil {
+							return fmt.Errorf("waiting for 'download' button failed due to %w", err)
+						}
+						foundDownloadButton = true
+					}
+
+					// Check if there is an original version of the image that can also be downloaded
+					if hasOriginal != nil {
+						var downloadOriginalNodes []*cdp.Node
+						if err := chromedp.Nodes(originalSelector, &downloadOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
+							return fmt.Errorf("checking for original version failed due to %w", err)
+						}
+						*hasOriginal = len(downloadOriginalNodes) > 0
+					}
+					return nil
+				}),
+
+				// Press down arrow until the right menu option is selected
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					var nodes []*cdp.Node
+					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 5000*time.Millisecond); err != nil {
+						return fmt.Errorf("could not find 'download' button due to %w", err)
+					}
+
+					n := 0
+					for {
+						n++
+						if n > 30 {
+							return errCouldNotPressDownloadButton
+						}
+						var style []*css.ComputedStyleProperty
+						if err := chromedp.ComputedStyle(downloadSelector, &style).Do(ctx); err != nil {
+							return err
+						}
+
+						for _, s := range style {
+							if s.Name == "background-color" && !strings.Contains(s.Value, "0, 0, 0") {
+								return nil
+							}
+						}
+						chromedp.KeyEventNode(nodes[0], kb.ArrowDown).Do(ctx)
+						time.Sleep(2 * time.Millisecond)
+					}
+				}),
+
+				// Activate the selected action and wait a bit before continuing
+				chromedp.KeyEvent(kb.Enter),
+			)
+		}()
 
 		if err == nil {
 			break
@@ -944,7 +947,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		i++
 	}
 
@@ -966,15 +969,22 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 
 	var n = 0
 	for {
+		n++
 		if err := func() error {
-			n++
-
 			if n > 1 {
 				muTabActivity.Lock()
 				defer muTabActivity.Unlock()
 
-				c := chromedp.FromContext(ctx)
-				target.ActivateTarget(c.Target.TargetID).Do(ctx)
+				target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
+			}
+
+			select {
+			case <-timeout1.C:
+				if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
+					return fmt.Errorf("could not reload page due to %w", err)
+				}
+				timeout1 = time.NewTimer(30 * time.Second)
+			default:
 			}
 
 			if err := chromedp.Run(ctx,
@@ -983,7 +993,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TimeLabel)), &timeStr),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TzLabel)), &tzStr),
 			); err != nil {
-				return err
+				return fmt.Errorf("could not extract photo data due to %w", err)
 			}
 
 			if len(filename) == 0 && len(dateStr) == 0 && len(timeStr) == 0 && n > 2 {
@@ -992,19 +1002,8 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 				// Click on info button
 				log.Debug().Msg("date not visible, clicking on i button")
 				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+getAriaLabelSelector(loc.OpenInfoMatch)+`')].pop()?.click()`, nil)); err != nil {
-					return err
+					return fmt.Errorf("could not click on info button due to %w", err)
 				}
-			}
-
-			select {
-			case <-timeout1.C:
-				if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
-					return err
-				}
-				timeout1 = time.NewTimer(30 * time.Second)
-			case <-timeout2.C:
-				return fmt.Errorf("timeout waiting for photo info")
-			case <-time.After(time.Duration(500+n*100) * time.Millisecond):
 			}
 
 			return nil
@@ -1012,6 +1011,12 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			return PhotoData{}, err
 		} else if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
 			break
+		}
+
+		select {
+		case <-timeout2.C:
+			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
+		case <-time.After(time.Duration(500+n*100) * time.Millisecond):
 		}
 	}
 
@@ -1036,6 +1041,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	startDownloadLock.Lock()
 	defer startDownloadLock.Unlock()
+	timeout2 := time.NewTimer(60 * time.Second)
 
 	if len(s.nextDownload) != 0 {
 		return NewDownload{}, nil, errors.New("unexpected: nextDownload channel is not empty")
@@ -1058,12 +1064,13 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 		if isOriginal || err != errCouldNotPressDownloadButton {
 			return NewDownload{}, nil, err
 		} else if !isOriginal {
-			requestDownload1(ctx, log)
+			if err := requestDownload1(ctx, log); err != nil {
+				return NewDownload{}, nil, err
+			}
 		}
 	}
 
-	timeout1 := time.NewTimer(30 * time.Second)
-	timeout2 := time.NewTimer(60 * time.Second)
+	timeout1 := time.NewTimer(10 * time.Second)
 
 	for {
 		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
@@ -1078,8 +1085,14 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 		select {
 		case <-timeout1.C:
-			if err := requestDownload1(ctx, log); err != nil {
-				return NewDownload{}, nil, err
+			if err := requestDownload2(ctx, log, isOriginal, hasOriginal); err != nil {
+				if isOriginal || err != errCouldNotPressDownloadButton {
+					return NewDownload{}, nil, err
+				} else if !isOriginal {
+					if err := requestDownload1(ctx, log); err != nil {
+						return NewDownload{}, nil, err
+					}
+				}
 			}
 		case <-timeout2.C:
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
@@ -1497,8 +1510,7 @@ func (s *Session) resync(ctx context.Context) error {
 
 	for {
 		if retries > 0 && retries%5 == 0 {
-			c := chromedp.FromContext(ctx)
-			target.ActivateTarget(c.Target.TargetID).Do(ctx)
+			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 
 			log.Debug().Msgf("we seem to be stuck, manually scrolling might help")
 			if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
@@ -1691,15 +1703,14 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 				ctx = SetContextData(ctx)
 				listenNavEvents(ctx)
 
-				navigateToExpectedUrl := false
+				atExpectedUrl := false
 				if i > 0 {
-					// pressing right arrow to navigate to sequential item
+					// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 					log.Trace().Msgf("navigating to %v by right arrow press", expectedLocation)
 					var location string
-					c := chromedp.FromContext(ctx)
 					muTabActivity.Lock()
 					err := chromedp.Run(ctx,
-						target.ActivateTarget(c.Target.TargetID),
+						target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
 						chromedp.ActionFunc(navRight),
 						chromedp.Sleep(50*time.Millisecond),
 						chromedp.Location(&location),
@@ -1708,7 +1719,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 								if location != expectedLocation {
 									log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
 								} else {
-									navigateToExpectedUrl = true
+									atExpectedUrl = true
 								}
 								return nil
 							},
@@ -1716,12 +1727,13 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job) {
 					)
 					muTabActivity.Unlock()
 					if err != nil {
-						job.errChan <- fmt.Errorf("error navigating to sequential item %s: %w", imageId, err)
-						return
+						log.Error().Msgf("error navigating to next batch item: %s", err.Error())
+						// job.errChan <- fmt.Errorf("error navigating to next batch item %s: %w", imageId, err)
+						// return
 					}
 				}
 
-				if !navigateToExpectedUrl {
+				if !atExpectedUrl {
 					log.Trace().Msgf("navigating to %v", expectedLocation)
 					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
 					if err != nil {
