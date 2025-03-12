@@ -192,7 +192,7 @@ func main() {
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.resync),
 	); err != nil {
-		log.Fatal().Msgf("failed to run resync: %v", err)
+		log.Fatal().Msgf("failure during sync: %v", err)
 		return
 	}
 
@@ -963,7 +963,7 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 	var dateStr string
 	var timeStr string
 	var tzStr string
-	timeout1 := time.NewTimer(10 * time.Second)
+	timeout1 := time.NewTimer(20 * time.Second)
 	timeout2 := time.NewTimer(90 * time.Second)
 	log.Debug().Msg("extracting photo date text and original file name")
 
@@ -981,9 +981,11 @@ func (s *Session) getPhotoData(ctx context.Context) (PhotoData, error) {
 			select {
 			case <-timeout1.C:
 				if _, err := chromedp.RunResponse(ctx, chromedp.Reload()); err != nil {
-					return fmt.Errorf("could not reload page due to %w", err)
+					log.Error().Msgf("could not reload page due to %s", err.Error())
+					timeout1 = time.NewTimer(5 * time.Second)
+				} else {
+					timeout1 = time.NewTimer(20 * time.Second)
 				}
-				timeout1 = time.NewTimer(30 * time.Second)
 			default:
 			}
 
