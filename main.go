@@ -854,6 +854,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 	foundDownloadButton := false
 	i := 0
 	for {
+		i++
 		err := func() error {
 			muTabActivity.Lock()
 			defer muTabActivity.Unlock()
@@ -938,8 +939,8 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 			break
 		} else if ctx.Err() != nil {
 			return ctx.Err()
-		} else if i > 5 {
-			log.Warn().Msgf("trying to request download with method 2 %d times, giving up now", i)
+		} else if i >= 2 {
+			log.Warn().Msgf("trying to request download with method 2 %d times, giving up now", i+1)
 			break
 		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
 			log.Warn().Msgf("trying to request download with method 2 again after error: %v", err)
@@ -948,7 +949,6 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, original bool, ha
 		}
 
 		time.Sleep(200 * time.Millisecond)
-		i++
 	}
 
 	return nil
@@ -1043,7 +1043,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	startDownloadLock.Lock()
 	defer startDownloadLock.Unlock()
-	timeout2 := time.NewTimer(60 * time.Second)
+	timeout2 := time.NewTimer(90 * time.Second)
 
 	if len(s.nextDownload) != 0 {
 		return NewDownload{}, nil, errors.New("unexpected: nextDownload channel is not empty")
@@ -1096,6 +1096,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 					}
 				}
 			}
+			timeout1 = time.NewTimer(10 * time.Second)
 		case <-timeout2.C:
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadStartedChan:
