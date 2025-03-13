@@ -209,11 +209,8 @@ type Job struct {
 type NewDownload struct {
 	GUID              string
 	suggestedFilename string
-}
-
-type DownloadChannels struct {
-	downloadStarted  chan NewDownload
-	downloadProgress chan bool
+	targetId          string
+	progressChan      chan bool
 }
 
 var lastMessageForKey map[string]time.Time = make(map[string]time.Time)
@@ -239,12 +236,12 @@ type Session struct {
 	downloadDirTmp   string // dir where the photos get stored temporarily
 	profileDir       string // user data session dir. automatically created on chrome startup.
 	startNodeParent  *cdp.Node
-	nextDownload     chan DownloadChannels
 	globalErrChan    chan error
 	photoRelPath     string
 	existingItems    map[string]struct{}
 	foundItems       map[string]struct{}
 	downloadedItems  map[string]struct{}
+	newDownloadChan  chan NewDownload
 }
 
 func NewSession() (*Session, error) {
@@ -308,12 +305,12 @@ func NewSession() (*Session, error) {
 		profileDir:      dir,
 		downloadDir:     downloadDir,
 		downloadDirTmp:  downloadDirTmp,
-		nextDownload:    make(chan DownloadChannels, 1),
 		globalErrChan:   make(chan error, 1),
 		photoRelPath:    photoRelPath,
 		existingItems:   existingDownloadFoldersMap,
 		foundItems:      make(map[string]struct{}),
 		downloadedItems: make(map[string]struct{}),
+		newDownloadChan: make(chan NewDownload),
 	}
 	return s, nil
 }
@@ -361,7 +358,7 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		panic(err)
 	}
 
-	startDownloadListener(ctx, s.nextDownload, s.globalErrChan)
+	startDownloadListener(ctx, s.newDownloadChan, s.globalErrChan)
 
 	return ctx, cancel
 }
@@ -1040,35 +1037,16 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	return PhotoData{dt, filename}, nil
 }
 
-var startDownloadLock sync.Mutex = sync.Mutex{}
-
 // startDownload starts the download of the currently viewed item. It returns
 // with an error if the download does not start within a minute.
-func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId string, isOriginal bool, hasOriginal *bool) (newDownload NewDownload, progressChan chan bool, err error) {
+func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId string, isOriginal bool, hasOriginal *bool, downloadChan <-chan NewDownload) (newDownload NewDownload, progressChan <-chan bool, err error) {
 	log.Trace().Msgf("entering startDownload()")
 
-	startDownloadLock.Lock()
-	defer startDownloadLock.Unlock()
 	timeoutTimer := time.NewTimer(90 * time.Second)
 	refreshTimer := time.NewTimer(90 * time.Second)
 	requestTimer := time.NewTimer(0 * time.Second)
 
-	if len(s.nextDownload) != 0 {
-		return NewDownload{}, nil, errors.New("unexpected: nextDownload channel is not empty")
-	}
-
-	downloadStartedChan := make(chan NewDownload, 1)
-	downloadProgressChan := make(chan bool, 1)
-	s.nextDownload <- DownloadChannels{downloadStartedChan, downloadProgressChan}
-
-	defer func() {
-		if err != nil {
-			select {
-			case <-s.nextDownload:
-			default:
-			}
-		}
-	}()
+	log.Trace().Msgf("requesting download from tab %s", chromedp.FromContext(ctx).Target.TargetID)
 
 	for {
 		select {
@@ -1093,9 +1071,9 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			}
 		case <-timeoutTimer.C:
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
-		case newDownload := <-downloadStartedChan:
-			log.Trace().Msgf("downloadStartedChan: %v", newDownload)
-			return newDownload, downloadProgressChan, nil
+		case newDownload := <-downloadChan:
+			log.Trace().Msgf("downloadChan: %v", newDownload)
+			return newDownload, newDownload.progressChan, nil
 		default:
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -1188,7 +1166,7 @@ func (s *Session) makeOutDir(imageId string) (string, error) {
 }
 
 // processDownload creates a directory in s.downloadDir with name = imageId and moves the downloaded files into that directory
-func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan chan bool, isOriginal, hasOriginal bool, imageId string, photoDataChan chan PhotoData) error {
+func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan <-chan bool, isOriginal, hasOriginal bool, imageId string, photoDataChan chan PhotoData) error {
 	log = log.With().Str("GUID", downloadInfo.GUID).Logger()
 
 	log.Trace().Msgf("entering processDownload")
@@ -1281,14 +1259,13 @@ progressLoop:
 }
 
 // downloadAndProcessItem starts a download then sends it to processDownload for processing
-func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string) error {
+func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload) error {
 	log.Trace().Msgf("entering downloadAndProcessItem")
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	photoDataChan := make(chan PhotoData, 2)
-	hasOriginalChan := make(chan bool, 1)
 	errChan := make(chan error)
 	jobsRemaining := 3
 
@@ -1312,21 +1289,17 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 
 	go func() {
 		hasOriginal := false
-		downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, false, &hasOriginal)
+		downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, false, &hasOriginal, downloadChan)
 		if err != nil {
 			log.Trace().Msgf("download failed: %v", err)
 			errChan <- err
-			hasOriginalChan <- false
 		} else {
-			hasOriginalChan <- hasOriginal
 			errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, false, hasOriginal, imageId, photoDataChan)
 		}
-	}()
 
-	go func() {
-		if <-hasOriginalChan {
+		if hasOriginal {
 			log := log.With().Bool("isOriginal", true).Logger()
-			downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, true, nil)
+			downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, true, nil, downloadChan)
 			if err != nil {
 				log.Trace().Msgf("download of original failed: %v", err)
 				errChan <- err
@@ -1525,9 +1498,28 @@ func (s *Session) resync(ctx context.Context) error {
 	resultChan := make(chan string, *workersFlag)
 	errChan := make(chan error, *workersFlag)
 	runningWorkers := *workersFlag
+	workerDownloadChanByFrameId := make(map[string]chan NewDownload, *workersFlag)
 	for i := range *workersFlag {
-		s.downloadWorker(i+1, jobChan, resultChan, errChan)
+		workerDownloadChan := make(chan NewDownload, 1)
+		workerDownloadChanByFrameId[s.downloadWorker(i+1, jobChan, resultChan, errChan, workerDownloadChan)] = workerDownloadChan
 	}
+
+	go func(ctx context.Context) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case newDownload := <-s.newDownloadChan:
+				worker, exists := workerDownloadChanByFrameId[newDownload.targetId]
+				if !exists {
+					s.globalErrChan <- fmt.Errorf("worker with targetId %s not found for download", newDownload.targetId)
+					return
+				}
+				worker <- newDownload
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}(ctx)
 
 syncAllLoop:
 	for {
@@ -1729,8 +1721,9 @@ func (s *Session) getPhotoUrl(imageId string) string {
 	return gphotosUrl + s.photoRelPath + "/photo/" + imageId
 }
 
-func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error) {
+func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error, downloadChan <-chan NewDownload) string {
 	ctx, cancel := chromedp.NewContext(s.parentContext)
+	chromedp.Run(ctx)
 	log := log.With().Int("workerId", workerId).Logger()
 	go func() {
 		defer cancel()
@@ -1795,7 +1788,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 
 				err := chromedp.Run(ctx, chromedp.ActionFunc(
 					func(ctx context.Context) error {
-						return s.downloadAndProcessItem(ctx, log, imageId)
+						return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
 					},
 				))
 				if err == errStillProcessing {
@@ -1817,6 +1810,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 		}
 		errChan <- nil
 	}()
+	return chromedp.FromContext(ctx).Target.TargetID.String()
 }
 
 // navRight navigates to the next item to the right
@@ -1944,40 +1938,37 @@ func setFileDate(filepath string, date time.Time) error {
 	return nil
 }
 
-func startDownloadListener(ctx context.Context, newDownloadChan chan DownloadChannels, globalErrChan chan error) {
-	currentDownloads := make(map[string]DownloadChannels)
+func startDownloadListener(ctx context.Context, newDownloadChan chan NewDownload, globalErrChan chan error) {
+	currentDownloads := make(map[string]chan bool)
+
+	// Listen for new download events
 	chromedp.ListenBrowser(ctx, func(v interface{}) {
 		if ev, ok := v.(*browser.EventDownloadWillBegin); ok {
 			log.Debug().Str("GUID", ev.GUID).Msgf("download of %s started", ev.SuggestedFilename)
 			if ev.SuggestedFilename == "downloads.html" {
 				return
 			}
-			select {
-			case currentDownloads[ev.GUID] = <-newDownloadChan:
-			default:
-				globalErrChan <- fmt.Errorf("unexpected download of %s", ev.SuggestedFilename)
+			if _, exists := currentDownloads[ev.GUID]; !exists {
+				currentDownloads[ev.GUID] = make(chan bool)
 			}
 			go func() {
-				select {
-				case currentDownloads[ev.GUID].downloadStarted <- NewDownload{ev.GUID, ev.SuggestedFilename}:
-				default:
-					// It looks like these events sometimes get duplicated, let's just ignore it
-				}
+				newDownloadChan <- NewDownload{ev.GUID, ev.SuggestedFilename, ev.FrameID.String(), currentDownloads[ev.GUID]}
 			}()
 		}
 	})
 
+	// Listen for download progress events
 	chromedp.ListenBrowser(ctx, func(v interface{}) {
 		if ev, ok := v.(*browser.EventDownloadProgress); ok {
 			if ev.State == browser.DownloadProgressStateInProgress {
 				select {
-				case currentDownloads[ev.GUID].downloadProgress <- false:
+				case currentDownloads[ev.GUID] <- false:
 				default:
 				}
 			}
 			if ev.State == browser.DownloadProgressStateCompleted {
 				log.Trace().Str("GUID", ev.GUID).Msgf("received download completed event")
-				progressChan := currentDownloads[ev.GUID].downloadProgress
+				progressChan := currentDownloads[ev.GUID]
 				delete(currentDownloads, ev.GUID)
 				go func() {
 					time.Sleep(1 * time.Millisecond)
