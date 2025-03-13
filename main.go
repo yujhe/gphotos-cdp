@@ -1174,7 +1174,7 @@ func (s *Session) makeOutDir(imageId string) (string, error) {
 }
 
 // processDownload creates a directory in s.downloadDir with name = imageId and moves the downloaded files into that directory
-func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan chan bool, isOriginal bool, imageId string, photoDataChan chan PhotoData) error {
+func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan chan bool, isOriginal, hasOriginal bool, imageId string, photoDataChan chan PhotoData) error {
 	log = log.With().Str("GUID", downloadInfo.GUID).Logger()
 
 	log.Trace().Msgf("entering processDownload")
@@ -1211,12 +1211,28 @@ progressLoop:
 		if err != nil {
 			return err
 		}
+		foundExpectedFile := false
+		for _, f := range filePaths {
+			if strings.Contains(f, data.filename) {
+				foundExpectedFile = true
+				break
+			}
+		}
+		if !foundExpectedFile {
+			log.Warn().Msgf("expected file %v not found in downloaded zip", data.filename)
+		}
 	} else {
 		var filename string
 		if downloadInfo.suggestedFilename != "download" && downloadInfo.suggestedFilename != "" {
 			filename = downloadInfo.suggestedFilename
 		} else {
 			filename = data.filename
+		}
+
+		if isOriginal || !hasOriginal {
+			if !strings.Contains(filename, data.filename) {
+				log.Warn().Msgf("expected file %v but downloaded file %v", data.filename, filename)
+			}
 		}
 
 		if isOriginal {
@@ -1289,7 +1305,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			hasOriginalChan <- false
 		} else {
 			hasOriginalChan <- hasOriginal
-			errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, false, imageId, photoDataChan)
+			errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, false, hasOriginal, imageId, photoDataChan)
 		}
 	}()
 
@@ -1301,7 +1317,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 				log.Trace().Msgf("download of original failed: %v", err)
 				errChan <- err
 			} else {
-				errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, true, imageId, photoDataChan)
+				errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, true, true, imageId, photoDataChan)
 			}
 		} else {
 			errChan <- nil
@@ -1915,7 +1931,7 @@ func startDownloadListener(ctx context.Context, newDownloadChan chan DownloadCha
 				select {
 				case currentDownloads[ev.GUID].downloadStarted <- NewDownload{ev.GUID, ev.SuggestedFilename}:
 				default:
-					globalErrChan <- fmt.Errorf("unexpected download of %s for GUID %s", ev.SuggestedFilename, ev.GUID)
+					// It looks like these events sometimes get duplicated, let's just ignore it
 				}
 			}()
 		}
