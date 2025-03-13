@@ -1630,7 +1630,11 @@ syncAllLoop:
 			if err != nil {
 				return err
 			} else if !shouldDownload {
-				break
+				if len(imageIds) > 0 {
+					break
+				} else {
+					continue
+				}
 			}
 
 			ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
@@ -1640,7 +1644,11 @@ syncAllLoop:
 
 			if strings.Contains(ariaLabel, "Highlight video") {
 				log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
-				break
+				if len(imageIds) > 0 {
+					break
+				} else {
+					continue
+				}
 			}
 
 			log.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
