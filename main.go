@@ -73,6 +73,7 @@ var (
 	workersFlag     = flag.Int("workers", 4, "number of concurrent downloads allowed")
 	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
+	batchSizeFlag   = flag.Int("batchsize", 20, "number of photos to download in one batch")
 )
 
 const gphotosUrl = "https://photos.google.com"
@@ -1530,14 +1531,15 @@ func (s *Session) resync(ctx context.Context) error {
 
 syncAllLoop:
 	for {
-		if retries > 0 && retries%5 == 0 {
+		if retries%5 == 0 {
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
-
-			log.Debug().Msgf("we seem to be stuck, manually scrolling might help")
-			if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
-				log.Err(err).Msgf("error scrolling page down manually, %v", err)
+			if retries != 0 {
+				log.Debug().Msgf("we seem to be stuck, manually scrolling might help")
+				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
+					log.Err(err).Msgf("error scrolling page down manually, %v", err)
+				}
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 		}
 
 		if retries > 0 && retries%25 == 0 {
@@ -1613,7 +1615,7 @@ syncAllLoop:
 
 		imageIds := []string{}
 
-		for i < len(nodes) && len(imageIds) < 20 {
+		for i < len(nodes) && (*batchSizeFlag <= 0 || len(imageIds) < *batchSizeFlag) {
 			lastNode = nodes[i]
 			i++
 			n++
