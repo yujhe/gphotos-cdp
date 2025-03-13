@@ -922,8 +922,8 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 			break
 		} else if ctx.Err() != nil {
 			return ctx.Err()
-		} else if i >= 10 {
-			log.Warn().Msgf("trying to request download with method 2 %d times, giving up now", i)
+		} else if i >= 5 {
+			log.Debug().Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
 		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
 			log.Debug().Msgf("trying to request download with method 2 again after error: %v", err)
