@@ -1222,7 +1222,16 @@ progressLoop:
 		}
 
 		if isOriginal || !hasOriginal {
-			if !strings.Contains(filename, data.filename) {
+			// Warn if filename is not the expected filename
+			warn := !strings.Contains(filename, data.filename)
+
+			// Google always converts PNGs to JPGs, don't warn about this
+			if strings.HasSuffix(strings.ToLower(data.filename), ".png") &&
+				strings.TrimSuffix(strings.ToLower(filename), ".jpg") == strings.TrimSuffix(strings.ToLower(data.filename), ".png") {
+				warn = false
+			}
+
+			if warn {
 				log.Warn().Msgf("expected file %v but downloaded file %v", data.filename, filename)
 			}
 		}
