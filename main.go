@@ -1574,7 +1574,7 @@ syncAllLoop:
 		}
 
 		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, len(s.downloadedItems), len(s.foundItems)-len(s.downloadedItems), sliderPos*100, estimatedRemaining)
+			log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, len(s.downloadedItems), newItemsCount-len(s.downloadedItems), sliderPos*100, estimatedRemaining)
 		}
 
 		if n != 0 && i >= len(nodes) {
@@ -1603,7 +1603,7 @@ syncAllLoop:
 				retries++
 				continue
 			}
-			log.Debug().Msgf("%d nodes on page, processing %d that haven't been processed yet", foundNodes, len(nodes)-(i+1))
+			log.Debug().Msgf("%d nodes on page, processing %d that haven't been processed yet", foundNodes, len(nodes))
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
