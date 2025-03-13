@@ -1504,7 +1504,7 @@ func (s *Session) resync(ctx context.Context) error {
 	var nodes []*cdp.Node
 	i := 0             // next node to process in nodes array
 	n := 0             // number of nodes processed in all
-	downloadCount := 0 // number of photos downloaded
+	newItemsCount := 0 // number of photos downloaded
 	retries := 0       // number of subsequent failed attempts to find new items to download
 	sliderPos := 0.0
 	estimatedRemaining := 1000
@@ -1538,8 +1538,8 @@ syncAllLoop:
 				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
 					log.Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
+				time.Sleep(200 * time.Millisecond)
 			}
-			time.Sleep(200 * time.Millisecond)
 		}
 
 		if retries > 0 && retries%25 == 0 {
@@ -1574,7 +1574,7 @@ syncAllLoop:
 		}
 
 		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("so far: resynced %v items, found %v new items, progress: %.2f%%, estimated remaining: %d", n, downloadCount, sliderPos*100, estimatedRemaining)
+			log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, len(s.downloadedItems), len(s.foundItems)-len(s.downloadedItems), sliderPos*100, estimatedRemaining)
 		}
 
 		if n != 0 && i >= len(nodes) {
@@ -1595,7 +1595,6 @@ syncAllLoop:
 			foundNodes := len(nodes)
 			for i, node := range nodes {
 				if node == lastNode {
-					log.Trace().Msgf("found %d nodes, %d have already been processed", len(nodes), i+1)
 					nodes = nodes[i+1:]
 					break
 				}
@@ -1604,7 +1603,7 @@ syncAllLoop:
 				retries++
 				continue
 			}
-			log.Debug().Msgf("found %d items, %d of which haven't been processed yet", foundNodes, len(nodes))
+			log.Debug().Msgf("%d nodes on page, processing %d that haven't been processed yet", foundNodes, len(nodes)-(i+1))
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
@@ -1679,10 +1678,10 @@ syncAllLoop:
 			log.Trace().Msgf("queued job with itemIds: %s", strings.Join(job.imageIds, ", "))
 		}
 
-		downloadCount += len(imageIds)
+		newItemsCount += len(imageIds)
 	}
 	close(jobChan)
-	log.Info().Msgf("in total: resynced %v items, found %v new items, progress: %.2f%%", n, downloadCount, sliderPos*100)
+	log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, len(s.downloadedItems), sliderPos*100)
 
 	if err := s.checkForRemovedFiles(ctx); err != nil {
 		return err
