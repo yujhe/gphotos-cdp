@@ -320,11 +320,12 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 
 	// Let's use as a base for allocator options (It implies Headless)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.DisableGPU,
 		chromedp.UserDataDir(s.profileDir),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("lang", "en-US,en"),
 		chromedp.Flag("accept-lang", "en-US,en"),
+		chromedp.Flag("window-size", "1920,1080"),
+		chromedp.Flag("headless", "new"),
 		chromedp.Flag("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"),
 	)
 
@@ -333,8 +334,6 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		opts = append(opts, chromedp.Flag("headless", false))
 		opts = append(opts, chromedp.Flag("hide-scrollbars", false))
 		opts = append(opts, chromedp.Flag("mute-audio", false))
-		// undo DisableGPU from above
-		opts = append(opts, chromedp.Flag("disable-gpu", false))
 	}
 	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	s.chromeExecCancel = cancel
@@ -793,8 +792,8 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 // viewed item.
 func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 	log.Trace().Msgf("acquiring lock to request download (method 1)")
-	muTabActivity.Lock()
-	defer muTabActivity.Unlock()
+	// muTabActivity.Lock()
+	// defer muTabActivity.Unlock()
 
 	log.Debug().Msgf("requesting download (method 1)")
 	target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
@@ -856,8 +855,8 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 		i++
 		err := func() error {
 			log.Trace().Msgf("acquiring lock to request download (method 2) i=%d", i)
-			muTabActivity.Lock()
-			defer muTabActivity.Unlock()
+			// muTabActivity.Lock()
+			// defer muTabActivity.Unlock()
 			log.Trace().Msgf("requesting download (method 2) i=%d", i)
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -970,17 +969,17 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	var dateStr string
 	var timeStr string
 	var tzStr string
-	timeout1 := time.NewTimer(3 * time.Second)
+	timeout1 := time.NewTimer(10 * time.Second)
 	timeout2 := time.NewTimer(90 * time.Second)
 
 	var n = 0
-	log.Trace().Msgf("acquiring lock to extract photo data")
-	muTabActivity.Lock()
-	defer muTabActivity.Unlock()
 	log.Debug().Msg("extracting photo data")
 	for {
 		n++
 		if err := func() error {
+			log.Trace().Msgf("acquiring lock to extract photo data (n=%d)", n)
+			muTabActivity.Lock()
+			defer muTabActivity.Unlock()
 			log.Trace().Msgf("extracting photo data (n=%d)", n)
 
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
@@ -994,16 +993,18 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				return errStillProcessing
 			}
 
-			select {
-			case <-timeout1.C:
-				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
-				if err := s.navigateToPhoto(ctx, imageId); err != nil {
-					log.Error().Msgf("getPhotoData: %s", err.Error())
-					timeout1 = time.NewTimer(2 * time.Second)
-				} else {
-					timeout1 = time.NewTimer(10 * time.Second)
+			if n > 1 {
+				select {
+				case <-timeout1.C:
+					log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
+					if err := s.navigateToPhoto(ctx, imageId); err != nil {
+						log.Error().Msgf("getPhotoData: %s", err.Error())
+						timeout1 = time.NewTimer(2 * time.Second)
+					} else {
+						timeout1 = time.NewTimer(10 * time.Second)
+					}
+				default:
 				}
-			default:
 			}
 
 			wait := 1 * time.Millisecond
@@ -1537,7 +1538,7 @@ func (s *Session) resync(ctx context.Context) error {
 		return nil
 	}
 
-	jobChan := make(chan Job, *workersFlag)
+	jobChan := make(chan Job, 2)
 	resultChan := make(chan string, *workersFlag)
 	errChan := make(chan error, *workersFlag)
 	runningWorkers := *workersFlag
