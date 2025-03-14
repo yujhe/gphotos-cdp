@@ -860,7 +860,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 			defer muTabActivity.Unlock()
 			log.Trace().Msgf("requesting download (method 2) i=%d", i)
 			// context timeout just in case
-			ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
+			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
 			err := chromedp.Run(ctxTimeout,
@@ -879,7 +879,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 				// Press down arrow until the right menu option is selected
 				chromedp.ActionFunc(func(ctx context.Context) error {
 					var nodes []*cdp.Node
-					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 5000*time.Millisecond); err != nil {
+					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 10000*time.Millisecond); err != nil {
 						return fmt.Errorf("could not find 'download' button due to %w", err)
 					}
 					foundDownloadButton = true
