@@ -427,7 +427,7 @@ func (s *Session) login(ctx context.Context) error {
 					return nil
 				}
 				if *headlessFlag {
-					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error.png"))
+					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 					return errors.New("authentication not possible in -headless mode, see error.png (URL=" + location + ")")
 				}
 				log.Debug().Msgf("not yet authenticated, at: %v", location)
@@ -879,7 +879,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 				// Press down arrow until the right menu option is selected
 				chromedp.ActionFunc(func(ctx context.Context) error {
 					var nodes []*cdp.Node
-					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 100*time.Millisecond); err != nil {
+					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 500*time.Millisecond); err != nil {
 						return fmt.Errorf("could not find 'download' button due to %w", err)
 					}
 					foundDownloadButton = true
@@ -896,7 +896,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 					n := 0
 					for {
 						n++
-						if n > 30 {
+						if n > 20 {
 							return errCouldNotPressDownloadButton
 						}
 						var style []*css.ComputedStyleProperty
@@ -926,7 +926,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 			break
 		} else if ctx.Err() != nil {
 			return ctx.Err()
-		} else if i >= 5 {
+		} else if i >= 3 {
 			log.Debug().Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
 		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
