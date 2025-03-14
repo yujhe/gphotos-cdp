@@ -70,10 +70,10 @@ var (
 	jsonLogFlag     = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag    = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 	removedFlag     = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
-	workersFlag     = flag.Int("workers", 4, "number of concurrent downloads allowed")
+	workersFlag     = flag.Int("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
-	batchSizeFlag   = flag.Int("batchsize", 20, "number of photos to download in one batch")
+	batchSizeFlag   = flag.Int("batchsize", 100, "number of photos to download in one batch")
 )
 
 const gphotosUrl = "https://photos.google.com"
