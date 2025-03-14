@@ -73,7 +73,7 @@ var (
 	workersFlag     = flag.Int("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
-	batchSizeFlag   = flag.Int("batchsize", 100, "number of photos to download in one batch")
+	batchSizeFlag   = flag.Int("batchsize", 0, "number of photos to download in one batch")
 )
 
 const gphotosUrl = "https://photos.google.com"
@@ -84,6 +84,7 @@ var errStillProcessing = errors.New("video is still processing & can be download
 var errCouldNotPressDownloadButton = errors.New("could not press download button")
 var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
+var errAlreadyDownloaded = errors.New("photo already downloaded")
 var fromDate time.Time
 var toDate time.Time
 var loc GPhotosLocale
@@ -202,8 +203,8 @@ type PhotoData struct {
 }
 
 type Job struct {
-	imageIds []string
-	errChan  chan error
+	imageIds      []string
+	continueAfter bool
 }
 
 type NewDownload struct {
@@ -1538,7 +1539,7 @@ func (s *Session) resync(ctx context.Context) error {
 		return nil
 	}
 
-	jobChan := make(chan Job, 2)
+	jobChan := make(chan Job)
 	resultChan := make(chan string, *workersFlag)
 	errChan := make(chan error, *workersFlag)
 	runningWorkers := *workersFlag
@@ -1679,23 +1680,13 @@ syncAllLoop:
 				return err
 			}
 
-			// Some highlight videos do actually download, so let's catch this error later instead
-			// if strings.Contains(ariaLabel, "Highlight video") {
-			// 	log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
-			// 	if len(imageIds) > 0 {
-			// 		break
-			// 	} else {
-			// 		continue
-			// 	}
-			// }
-
 			log.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
 			imageIds = append(imageIds, imageId)
 		}
 
 		if len(imageIds) > 0 {
 			log.Debug().Msgf("adding %d photos to queue", len(imageIds))
-			job := Job{imageIds, make(chan error, 1)}
+			job := Job{imageIds, true}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
 		sendJobLoop:
@@ -1777,95 +1768,131 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 		for job := range jobs {
 			log.Debug().Msgf("worker received batch of %d items", len(job.imageIds))
 			log.Trace().Msgf("starting job with itemIds: %s", strings.Join(job.imageIds, ", "))
-			for i, imageId := range job.imageIds {
-				log := log.With().Str("itemId", imageId).Logger()
+			i := 0
+			for {
+				imageId := ""
+				if i < len(job.imageIds) {
+					imageId = job.imageIds[i]
+				} else if !job.continueAfter || i >= *batchSizeFlag {
+					break
+				}
+				log = log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
+
 				log.Trace().Msgf("processing batch item %d", i)
-				expectedLocation := s.getPhotoUrl(imageId)
-
-				ctx = SetContextData(ctx)
-				listenNavEvents(ctx)
-
-				atExpectedUrl := false
-				if i > 0 {
-					// pressing right arrow to navigate to the next item (batch jobs should be sequential)
-					var location string
-					log.Trace().Msgf("acquiring lock to navigate to %v by right arrow press", expectedLocation)
-					// muTabActivity.Lock()
-					log.Trace().Msgf("navigating to %v by right arrow press", expectedLocation)
-					err := chromedp.Run(ctx,
-						target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
-						chromedp.ActionFunc(navRight),
-						chromedp.Sleep(50*time.Millisecond),
-						chromedp.Location(&location),
-						chromedp.ActionFunc(
-							func(ctx context.Context) error {
-								if location != expectedLocation {
-									log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
-								} else {
-									atExpectedUrl = true
-								}
-								return nil
-							},
-						),
-					)
-					// muTabActivity.Unlock()
-					if err != nil {
-						log.Error().Msgf("error navigating to next batch item: %s", err.Error())
-					} else {
-						log.Trace().Msgf("done navigating to %v by right arrow press", expectedLocation)
-					}
-				}
-
-				if !atExpectedUrl {
-					log.Trace().Msgf("navigating to %v", expectedLocation)
-					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
-					if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
-						log.Error().Msgf("error navigating to %v: %s, will try again", expectedLocation, err.Error())
-						time.Sleep(100 * time.Millisecond)
-						resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
-					}
-					if err != nil {
-						errChan <- fmt.Errorf("error navigating to %v: %w", expectedLocation, err)
-						return
-					}
-					if resp.Status == http.StatusOK {
-						if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
-							errChan <- fmt.Errorf("error waiting for body: %w", err)
-							return
-						}
-					} else {
-						errChan <- fmt.Errorf("unexpected response: %v", resp.Status)
-						return
-					}
-				}
-
-				time.Sleep(10 * time.Millisecond)
-
-				err := chromedp.Run(ctx, chromedp.ActionFunc(
-					func(ctx context.Context) error {
-						return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
-					},
-				))
-				if err == errStillProcessing {
-					// Old highlight videos are no longer available
-					log.Info().Msg("skipping generated highlight video that Google seems to have lost")
-				} else if err == errPhotoTakenAfterToDate {
-					log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
-					// } else if err == errPhotoTakenBeforeFromDate {
-					// 	log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
+				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, i > 0, downloadChan)
+				if err == errAlreadyDownloaded {
+					break
 				} else if err != nil {
-					log.Trace().Msgf("downloadWorker: encountered error while processing batch item %d: %s", i, err.Error())
 					errChan <- err
 					return
-				} else {
-					resultChan <- imageId
 				}
+				resultChan <- downloadedItemId
+				i++
 			}
 			log.Info().Msgf("worker finished processing batch of %d items", len(job.imageIds))
 		}
 		errChan <- nil
 	}()
 	return chromedp.FromContext(ctx).Target.TargetID.String()
+}
+
+func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, doNav bool, downloadChan <-chan NewDownload) (string, error) {
+	expectedLocation := ""
+	if imageId != "" {
+		expectedLocation = s.getPhotoUrl(imageId)
+	}
+
+	ctx = SetContextData(ctx)
+	listenNavEvents(ctx)
+
+	atExpectedUrl := false
+	if doNav {
+		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
+		var location string
+		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
+		err := chromedp.Run(ctx,
+			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
+			chromedp.ActionFunc(navRight),
+			chromedp.Sleep(50*time.Millisecond),
+			chromedp.Location(&location),
+			chromedp.ActionFunc(
+				func(ctx context.Context) error {
+					if expectedLocation != "" && location != expectedLocation {
+						log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
+					} else {
+						atExpectedUrl = true
+					}
+					return nil
+				},
+			),
+		)
+		if err != nil {
+			log.Error().Msgf("error navigating to next batch item: %s", err.Error())
+		} else {
+			log.Trace().Msgf("done navigating to %v by right arrow press", expectedLocation)
+		}
+	}
+
+	if !atExpectedUrl {
+		log.Trace().Msgf("navigating to %v", expectedLocation)
+		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
+		if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
+			log.Error().Msgf("error navigating to %v: %s, will try again", expectedLocation, err.Error())
+			time.Sleep(100 * time.Millisecond)
+			resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
+		}
+		if err != nil {
+			return "", fmt.Errorf("error navigating to %v: %w", expectedLocation, err)
+		}
+		if resp.Status == http.StatusOK {
+			if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
+				return "", fmt.Errorf("error waiting for body: %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("unexpected response: %v", resp.Status)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if imageId == "" {
+		var location string
+		if err := chromedp.Run(ctx, chromedp.Location(&location)); err != nil {
+			return "", fmt.Errorf("error getting location: %w", err)
+		}
+		var err error
+		imageId, err = imageIdFromUrl(location)
+		if err != nil {
+			return "", fmt.Errorf("error getting image ID from URL: %w", err)
+		}
+
+		isNew, err := s.isNewItem(log, imageId)
+		if err != nil {
+			return "", err
+		} else if !isNew {
+			return "", errAlreadyDownloaded
+		}
+	}
+
+	err := chromedp.Run(ctx, chromedp.ActionFunc(
+		func(ctx context.Context) error {
+			return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
+		},
+	))
+	if err == errStillProcessing {
+		// Old highlight videos are no longer available
+		log.Info().Msg("skipping generated highlight video that Google seems to have lost")
+	} else if err == errPhotoTakenAfterToDate {
+		log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
+		// } else if err == errPhotoTakenBeforeFromDate {
+		// 	log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
+	} else if err != nil {
+		log.Trace().Msgf("downloadWorker: encountered error while processing batch item: %s", err.Error())
+		return "", err
+	} else {
+		return imageId, nil
+	}
+	return "", nil
 }
 
 // navRight navigates to the next item to the right
