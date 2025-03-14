@@ -1773,7 +1773,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				imageId := ""
 				if i < len(job.imageIds) {
 					imageId = job.imageIds[i]
-				} else if !job.continueAfter || i >= *batchSizeFlag {
+				} else if !job.continueAfter && i >= *batchSizeFlag {
 					break
 				}
 				log = log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
