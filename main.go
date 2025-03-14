@@ -792,6 +792,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownload1(ctx context.Context, log zerolog.Logger) error {
+	log.Trace().Msgf("acquiring lock to request download (method 1)")
 	muTabActivity.Lock()
 	defer muTabActivity.Unlock()
 
@@ -801,6 +802,7 @@ func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 		return err
 	}
 	time.Sleep(250 * time.Millisecond)
+	log.Trace().Msgf("done requesting download (method 1)")
 	return nil
 }
 
@@ -853,13 +855,15 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 	for {
 		i++
 		err := func() error {
+			log.Trace().Msgf("acquiring lock to request download (method 2) i=%d", i)
 			muTabActivity.Lock()
 			defer muTabActivity.Unlock()
+			log.Trace().Msgf("requesting download (method 2) i=%d", i)
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 
-			return chromedp.Run(ctxTimeout,
+			err := chromedp.Run(ctxTimeout,
 				target.ActivateTarget(chromedp.FromContext(ctxTimeout).Target.TargetID),
 				chromedp.ActionFunc(func(ctx context.Context) error {
 					// Wait for more options menu to appear
@@ -913,6 +917,8 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 				// Activate the selected action and wait a bit before continuing
 				chromedp.KeyEvent(kb.Enter),
 			)
+			log.Trace().Msgf("done requesting download (method 2) i=%d", i)
+			return err
 		}()
 
 		if err == nil {
@@ -943,7 +949,9 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	if err != nil {
 		return fmt.Errorf("error navigating to %v: %w", url, err)
 	}
-	if resp.Status == http.StatusOK {
+	if resp == nil {
+		return fmt.Errorf("unexpected response: nil")
+	} else if resp.Status == http.StatusOK {
 		if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
 			return fmt.Errorf("error waiting for body: %w", err)
 		}
@@ -964,15 +972,27 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	var tzStr string
 	timeout1 := time.NewTimer(3 * time.Second)
 	timeout2 := time.NewTimer(90 * time.Second)
-	log.Debug().Msg("extracting photo date text and original file name")
 
 	var n = 0
+	log.Trace().Msgf("acquiring lock to extract photo data")
 	muTabActivity.Lock()
 	defer muTabActivity.Unlock()
+	log.Debug().Msg("extracting photo data")
 	for {
 		n++
 		if err := func() error {
+			log.Trace().Msgf("extracting photo data (n=%d)", n)
+
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
+
+			// If video is 'still processing', photo data may never load, so stop here
+			var undownloadable bool
+			if err := chromedp.Run(ctx, chromedp.Evaluate(`[...document.querySelectorAll('c-wiz[data-media-key*="'+document.location.href.trim().split('/').pop()+'"]')].filter(x => getComputedStyle(x).visibility != 'hidden')[0]?.textContent.indexOf('Your video will be ready soon') >= 0`, &undownloadable)); err != nil {
+				return fmt.Errorf("while checking if video is still processing %w", err)
+			}
+			if undownloadable {
+				return errStillProcessing
+			}
 
 			select {
 			case <-timeout1.C:
@@ -1023,6 +1043,8 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
 		case <-time.After(10 * time.Millisecond):
 		}
+
+		log.Trace().Msgf("done extracting photo data (n=%d)", n)
 	}
 
 	log.Trace().Msgf("parsing date: %v and time: %v", dateStr, timeStr)
@@ -1049,6 +1071,11 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 	log.Trace().Msgf("requesting download from tab %s", chromedp.FromContext(ctx).Target.TargetID)
 
 	for {
+		// Checking for gphotos warning that this video can't be downloaded (no known solution)
+		if err := s.checkForStillProcessing(ctx); err != nil {
+			return NewDownload{}, nil, err
+		}
+
 		select {
 		case <-requestTimer.C:
 			if err := requestDownload2(ctx, log, imageId, isOriginal, hasOriginal); err != nil {
@@ -1081,17 +1108,23 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
 			log.Debug().Msgf("checking download start status")
 		}
-
-		// Checking for gphotos warning that this video can't be downloaded (no known solution)
-		// This check only works for requestDownload2 method (not requestDownload1)
-		if err := s.checkForStillProcessing(ctx); err != nil {
-			return NewDownload{}, nil, err
-		}
 	}
 }
 
 func (*Session) checkForStillProcessing(ctx context.Context) error {
 	log.Trace().Msgf("checking for still processing dialog")
+
+	// This text is available before attempting to download, but doesn't show immediately when the page is loaded
+	var undownloadable bool
+	chromedp.Evaluate(`function () {
+		return [...document.querySelectorAll('c-wiz[data-media-key*="document.location.href.trim().split('/').pop()"]')].filter(x => getComputedStyle(x).visibility != 'hidden')[0]?.textContent.indexOf('Your video will be ready soon') >= 0
+	}`, &undownloadable).Do(ctx)
+
+	if undownloadable {
+		return errStillProcessing
+	}
+
+	// The first check only works for requestDownload2 method (not requestDownload1)
 	var nodes []*cdp.Node
 	if err := chromedp.Nodes(getAriaLabelSelector(loc.VideoStillProcessingDialogLabel)+` button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
 		return err
@@ -1108,7 +1141,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 			return err
 		}
 	} else {
-		// This check only works for requestDownload1 method (not requestDownload2)
+		// The second check only works for requestDownload1 method (not requestDownload2)
 		if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.VideoStillProcessingStatusText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 			return err
 		}
@@ -1189,6 +1222,7 @@ progressLoop:
 		}
 	}
 
+	log.Trace().Msgf("download completed, will continue processing when photo data is ready")
 	data := <-photoDataChan
 
 	outDir, err := s.makeOutDir(imageId)
@@ -1524,7 +1558,9 @@ func (s *Session) resync(ctx context.Context) error {
 					s.globalErrChan <- fmt.Errorf("worker with targetId %s not found for download", newDownload.targetId)
 					return
 				}
-				worker <- newDownload
+				go func() {
+					worker <- newDownload
+				}()
 			case <-time.After(5 * time.Millisecond):
 			}
 		}
@@ -1642,14 +1678,15 @@ syncAllLoop:
 				return err
 			}
 
-			if strings.Contains(ariaLabel, "Highlight video") {
-				log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
-				if len(imageIds) > 0 {
-					break
-				} else {
-					continue
-				}
-			}
+			// Some highlight videos do actually download, so let's catch this error later instead
+			// if strings.Contains(ariaLabel, "Highlight video") {
+			// 	log.Info().Msgf("skipping highlight video (%s)", ariaLabel)
+			// 	if len(imageIds) > 0 {
+			// 		break
+			// 	} else {
+			// 		continue
+			// 	}
+			// }
 
 			log.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
 			imageIds = append(imageIds, imageId)
@@ -1750,9 +1787,10 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				atExpectedUrl := false
 				if i > 0 {
 					// pressing right arrow to navigate to the next item (batch jobs should be sequential)
-					log.Trace().Msgf("navigating to %v by right arrow press", expectedLocation)
 					var location string
-					muTabActivity.Lock()
+					log.Trace().Msgf("acquiring lock to navigate to %v by right arrow press", expectedLocation)
+					// muTabActivity.Lock()
+					log.Trace().Msgf("navigating to %v by right arrow press", expectedLocation)
 					err := chromedp.Run(ctx,
 						target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
 						chromedp.ActionFunc(navRight),
@@ -1769,15 +1807,22 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 							},
 						),
 					)
-					muTabActivity.Unlock()
+					// muTabActivity.Unlock()
 					if err != nil {
 						log.Error().Msgf("error navigating to next batch item: %s", err.Error())
+					} else {
+						log.Trace().Msgf("done navigating to %v by right arrow press", expectedLocation)
 					}
 				}
 
 				if !atExpectedUrl {
 					log.Trace().Msgf("navigating to %v", expectedLocation)
 					resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
+					if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
+						log.Error().Msgf("error navigating to %v: %s, will try again", expectedLocation, err.Error())
+						time.Sleep(100 * time.Millisecond)
+						resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
+					}
 					if err != nil {
 						errChan <- fmt.Errorf("error navigating to %v: %w", expectedLocation, err)
 						return
