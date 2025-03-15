@@ -240,7 +240,7 @@ type Session struct {
 	globalErrChan    chan error
 	photoRelPath     string
 	existingItems    map[string]struct{}
-	foundItems       map[string]struct{}
+	foundItems       sync.Map
 	downloadedItems  map[string]struct{}
 	newDownloadChan  chan NewDownload
 }
@@ -309,7 +309,6 @@ func NewSession() (*Session, error) {
 		globalErrChan:   make(chan error, 1),
 		photoRelPath:    photoRelPath,
 		existingItems:   existingDownloadFoldersMap,
-		foundItems:      make(map[string]struct{}),
 		downloadedItems: make(map[string]struct{}),
 		newDownloadChan: make(chan NewDownload),
 	}
@@ -1739,13 +1738,13 @@ func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cd
 }
 
 func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) (bool, error) {
-	if _, exists := s.foundItems[imageId]; exists {
+	if _, exists := s.foundItems.Load(imageId); exists {
 		log.Warn().Msgf("looks like we've already seen this item, this shouldn't happen")
 		return false, nil
 	}
 
 	if markFound {
-		s.foundItems[imageId] = struct{}{}
+		s.foundItems.Store(imageId, struct{}{})
 		log.Trace().Msgf("processing %v", imageId)
 	}
 
@@ -1785,8 +1784,16 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				log = log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
 
 				log.Trace().Msgf("processing batch item %d", i)
-				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, i > 0, downloadChan)
+				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan)
 				if err == errAlreadyDownloaded {
+					if i >= len(job.imageIds) {
+						break
+					} else {
+						continue
+					}
+				} else if err == errStillProcessing {
+					// Old highlight videos are no longer available
+					log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 					if i >= len(job.imageIds) {
 						break
 					} else {
@@ -1805,12 +1812,12 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 	return chromedp.FromContext(ctx).Target.TargetID.String()
 }
 
-func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, doNav bool, downloadChan <-chan NewDownload) (string, error) {
+func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload) (string, error) {
 	expectedLocation := ""
 	if imageId != "" {
 		expectedLocation = s.getPhotoUrl(imageId)
 
-		if _, exists := s.foundItems[imageId]; exists {
+		if _, exists := s.foundItems.Load(imageId); exists {
 			return "", errAlreadyDownloaded
 		}
 	}
@@ -1898,13 +1905,8 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 			return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
 		},
 	))
-	if err == errStillProcessing {
-		// Old highlight videos are no longer available
-		log.Info().Msg("skipping generated highlight video that Google seems to have lost")
-	} else if err == errPhotoTakenAfterToDate {
+	if err == errPhotoTakenAfterToDate {
 		log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
-		// } else if err == errPhotoTakenBeforeFromDate {
-		// 	log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
 	} else if err != nil {
 		log.Trace().Msgf("downloadWorker: encountered error while processing batch item: %s", err.Error())
 		return "", err
@@ -1928,7 +1930,7 @@ func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 		for itemId := range s.existingItems {
 			if itemId != "tmp" {
 				// Check if the folder name is in the map of photo IDs
-				if _, exists := s.foundItems[itemId]; !exists {
+				if _, exists := s.foundItems.Load(itemId); !exists {
 					deleted = append(deleted, itemId)
 				}
 			}
@@ -1976,9 +1978,7 @@ func (s *Session) processJobs(runningWorkers *int, resultChan chan string, errCh
 		for {
 			select {
 			case res := <-resultChan:
-				if _, exists := s.foundItems[res]; !exists {
-					s.foundItems[res] = struct{}{}
-				}
+				s.foundItems.Store(res, struct{}{})
 				if _, exists := s.downloadedItems[res]; exists {
 					log.Warn().Msgf("we've downloaded the same item twice, this shouldn't happen")
 				} else {
