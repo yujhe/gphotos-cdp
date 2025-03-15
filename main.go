@@ -1660,32 +1660,14 @@ syncAllLoop:
 
 			imageId, err := imageIdFromUrl(lastNode.AttributeValue("href"))
 			if err != nil {
-				return fmt.Errorf("error getting image id from url, %w", err)
-			}
-			log := log.With().Str("itemId", imageId).Logger()
-
-			shouldDownload, err := s.isNewItem(log, imageId)
-			if err != nil {
-				return err
-			} else if !shouldDownload {
-				if len(imageIds) > 0 {
-					break
-				} else {
-					continue
-				}
+				return fmt.Errorf("error getting item id from url, %w", err)
 			}
 
-			ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
-			if err != nil {
-				return err
-			}
-
-			log.Info().Msgf(`item "%s" is missing. Downloading it.`, ariaLabel)
 			imageIds = append(imageIds, imageId)
 		}
 
 		if len(imageIds) > 0 {
-			log.Debug().Msgf("adding %d photos to queue", len(imageIds))
+			log.Debug().Msgf("adding %d items to queue", len(imageIds))
 			job := Job{imageIds, true}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
@@ -1865,16 +1847,19 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		if err != nil {
 			return "", fmt.Errorf("error getting image ID from URL: %w", err)
 		}
-
-		isNew, err := s.isNewItem(log, imageId)
-		if err != nil {
-			return "", err
-		} else if !isNew {
-			return "", errAlreadyDownloaded
-		}
+		log = log.With().Str("itemId", imageId).Logger()
 	}
 
-	err := chromedp.Run(ctx, chromedp.ActionFunc(
+	isNew, err := s.isNewItem(log, imageId)
+	if err != nil {
+		return "", err
+	} else if !isNew {
+		return "", errAlreadyDownloaded
+	}
+
+	log.Info().Msgf(`item not found in photos dir downloading it now`)
+
+	err = chromedp.Run(ctx, chromedp.ActionFunc(
 		func(ctx context.Context) error {
 			return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
 		},
