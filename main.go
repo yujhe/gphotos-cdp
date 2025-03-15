@@ -1663,7 +1663,28 @@ syncAllLoop:
 				return fmt.Errorf("error getting item id from url, %w", err)
 			}
 
+			log := log.With().Str("itemId", imageId).Logger()
+
+			shouldDownload, err := s.isNewItem(log, imageId, false)
+			if err != nil {
+				return err
+			} else if !shouldDownload {
+				if len(imageIds) > 0 {
+					break
+				} else {
+					continue
+				}
+			}
+
 			imageIds = append(imageIds, imageId)
+
+			if timedLogReady("showAriaLabel", 60*time.Second) {
+				ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
+				if err != nil {
+					return fmt.Errorf("error getting item aria label, %w", err)
+				}
+				log.Info().Msgf("processing photo %v", ariaLabel)
+			}
 		}
 
 		if len(imageIds) > 0 {
@@ -1717,14 +1738,16 @@ func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cd
 	return ariaLabel, nil
 }
 
-func (s *Session) isNewItem(log zerolog.Logger, imageId string) (bool, error) {
+func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) (bool, error) {
 	if _, exists := s.foundItems[imageId]; exists {
 		log.Warn().Msgf("looks like we've already seen this item, this shouldn't happen")
 		return false, nil
 	}
 
-	s.foundItems[imageId] = struct{}{}
-	log.Trace().Msgf("processing %v", imageId)
+	if markFound {
+		s.foundItems[imageId] = struct{}{}
+		log.Trace().Msgf("processing %v", imageId)
+	}
 
 	hasFiles, err := s.dirHasFiles(imageId)
 	if err != nil {
@@ -1750,8 +1773,9 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 		for job := range jobs {
 			log.Debug().Msgf("worker received batch of %d items", len(job.imageIds))
 			log.Trace().Msgf("starting job with itemIds: %s", strings.Join(job.imageIds, ", "))
-			i := 0
+			i := -1
 			for {
+				i++
 				imageId := ""
 				if i < len(job.imageIds) {
 					imageId = job.imageIds[i]
@@ -1763,13 +1787,16 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				log.Trace().Msgf("processing batch item %d", i)
 				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, i > 0, downloadChan)
 				if err == errAlreadyDownloaded {
-					break
+					if i >= len(job.imageIds) {
+						break
+					} else {
+						continue
+					}
 				} else if err != nil {
 					errChan <- err
 					return
 				}
 				resultChan <- downloadedItemId
-				i++
 			}
 			log.Info().Msgf("worker finished processing batch of %d items", len(job.imageIds))
 		}
@@ -1782,15 +1809,22 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 	expectedLocation := ""
 	if imageId != "" {
 		expectedLocation = s.getPhotoUrl(imageId)
+
+		if _, exists := s.foundItems[imageId]; exists {
+			return "", errAlreadyDownloaded
+		}
 	}
 
 	ctx = SetContextData(ctx)
 	listenNavEvents(ctx)
 
-	atExpectedUrl := false
-	if doNav {
+	var location string
+	if err := chromedp.Run(ctx, chromedp.Location(&location)); err != nil {
+		return "", fmt.Errorf("error getting location: %w", err)
+	}
+	atExpectedUrl := location == expectedLocation
+	if !atExpectedUrl && strings.HasPrefix(location, gphotosUrl) {
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
-		var location string
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
 		err := chromedp.Run(ctx,
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
@@ -1815,7 +1849,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		}
 	}
 
-	if !atExpectedUrl {
+	if !atExpectedUrl || location == "" {
 		log.Trace().Msgf("navigating to %v", expectedLocation)
 		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
 		if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
@@ -1850,7 +1884,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		log = log.With().Str("itemId", imageId).Logger()
 	}
 
-	isNew, err := s.isNewItem(log, imageId)
+	isNew, err := s.isNewItem(log, imageId, true)
 	if err != nil {
 		return "", err
 	} else if !isNew {
