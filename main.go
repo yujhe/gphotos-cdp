@@ -85,6 +85,7 @@ var errCouldNotPressDownloadButton = errors.New("could not press download button
 var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var errAlreadyDownloaded = errors.New("photo already downloaded")
+var errAbortBatch = errors.New("abort batch")
 var fromDate time.Time
 var toDate time.Time
 var loc GPhotosLocale
@@ -1785,10 +1786,13 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 
 				log.Trace().Msgf("processing batch item %d", i)
 				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan)
-				if err == errAlreadyDownloaded {
+				if err == errAbortBatch {
+					break
+				} else if err == errAlreadyDownloaded {
 					if i >= len(job.imageIds) {
 						break
 					} else {
+						resultChan <- ""
 						continue
 					}
 				} else if err == errStillProcessing {
@@ -1797,6 +1801,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 					if i >= len(job.imageIds) {
 						break
 					} else {
+						resultChan <- ""
 						continue
 					}
 				} else if err != nil {
@@ -1856,7 +1861,10 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		}
 	}
 
-	if !atExpectedUrl || location == "" {
+	if !atExpectedUrl {
+		if expectedLocation == "" {
+			return "", errAbortBatch
+		}
 		log.Trace().Msgf("navigating to %v", expectedLocation)
 		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
 		if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
@@ -1978,11 +1986,13 @@ func (s *Session) processJobs(runningWorkers *int, resultChan chan string, errCh
 		for {
 			select {
 			case res := <-resultChan:
-				s.foundItems.Store(res, struct{}{})
-				if _, exists := s.downloadedItems[res]; exists {
-					log.Warn().Msgf("we've downloaded the same item twice, this shouldn't happen")
-				} else {
-					s.downloadedItems[res] = struct{}{}
+				if res != "" {
+					s.foundItems.Store(res, struct{}{})
+					if _, exists := s.downloadedItems[res]; exists {
+						log.Warn().Msgf("we've downloaded the same item twice, this shouldn't happen")
+					} else {
+						s.downloadedItems[res] = struct{}{}
+					}
 				}
 			case err := <-errChan:
 				*runningWorkers--
