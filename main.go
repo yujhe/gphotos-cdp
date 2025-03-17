@@ -1121,6 +1121,8 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 }
 
 func (*Session) checkForStillProcessing(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 8000*time.Millisecond)
+	defer cancel()
 	log.Trace().Msgf("checking for still processing dialog")
 
 	// This text is available before attempting to download, but doesn't show immediately when the page is loaded
@@ -1133,6 +1135,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		return errStillProcessing
 	}
 
+	log.Trace().Msgf("checking for still processing dialog (1)")
 	// The first check only works for requestDownload2 method (not requestDownload1)
 	var nodes []*cdp.Node
 	if err := chromedp.Nodes(getAriaLabelSelector(loc.VideoStillProcessingDialogLabel)+` button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
@@ -1150,6 +1153,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 			return err
 		}
 	} else {
+		log.Trace().Msgf("checking for still processing dialog (2)")
 		// The second check only works for requestDownload1 method (not requestDownload2)
 		if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.VideoStillProcessingStatusText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 			return err
@@ -1159,6 +1163,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 			time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
 		}
 		if !isStillProcessing {
+			log.Trace().Msgf("checking for still processing dialog (3)")
 			// Sometimes Google returns a different error, check for that too
 			if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.NoWebpageFoundText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 				return err
@@ -1176,6 +1181,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		log.Warn().Msg("received 'Video is still processing' error")
 		return errStillProcessing
 	}
+	log.Trace().Msgf("checking for still processing dialog (done)")
 	return nil
 }
 
@@ -1800,6 +1806,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 			log.Debug().Msgf("worker received batch of %d items", len(job.imageIds))
 			log.Trace().Msgf("starting job with itemIds: %s", strings.Join(job.imageIds, ", "))
 			i := -1
+			isConsecutive := false
 			for {
 				i++
 				imageId := ""
@@ -1811,20 +1818,21 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				log := log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
 
 				log.Trace().Msgf("processing batch item %d", i)
-				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan)
+				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan, isConsecutive)
+				isConsecutive = true
 				if err == errAbortBatch {
 					break
 				} else if err == errAlreadyDownloaded || err == errStillProcessing {
 					if err == errStillProcessing {
 						// Old highlight videos are no longer available
 						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
+						isConsecutive = false
 					}
 					if i >= len(job.imageIds) {
 						log.Debug().Msgf("ending batch due to skipped item and no more items in batch")
 						break
 					} else {
-						resultChan <- ""
-						continue
+						downloadedItemId = ""
 					}
 				} else if err != nil {
 					errChan <- err
@@ -1839,7 +1847,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 	return chromedp.FromContext(ctx).Target.TargetID.String()
 }
 
-func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload) (string, error) {
+func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload, isConsecutive bool) (string, error) {
 	expectedLocation := ""
 	if imageId != "" {
 		expectedLocation = s.getPhotoUrl(imageId)
@@ -1851,7 +1859,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 	}
 	log.Trace().Msgf("current location: %s", previousLocation)
 	atExpectedUrl := previousLocation == expectedLocation
-	if !atExpectedUrl && strings.HasPrefix(previousLocation, gphotosUrl) {
+	if isConsecutive && !atExpectedUrl && strings.HasPrefix(previousLocation, gphotosUrl) {
 		var location string
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
