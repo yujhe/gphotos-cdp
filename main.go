@@ -192,6 +192,7 @@ func main() {
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.resync),
+		chromedp.ActionFunc(s.checkForRemovedFiles),
 	); err != nil {
 		log.Fatal().Msgf("failure during sync: %v", err)
 	}
@@ -918,7 +919,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 				// Activate the selected action and wait a bit before continuing
 				chromedp.KeyEvent(kb.Enter),
 			)
-			log.Trace().Msgf("done requesting download (method 2) i=%d", i)
+			log.Trace().Msgf("done attempting to request download (method 2) i=%d", i)
 			return err
 		}()
 
@@ -947,6 +948,11 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	url := s.getPhotoUrl(imageId)
 	log.Trace().Msgf("navigating to %v", url)
 	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(url))
+	if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
+		log.Error().Msgf("error navigating to %v: %s, will try again", url, err.Error())
+		time.Sleep(100 * time.Millisecond)
+		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(url))
+	}
 	if err != nil {
 		return fmt.Errorf("error navigating to %v: %w", url, err)
 	}
@@ -1581,7 +1587,7 @@ func (s *Session) resync(ctx context.Context) error {
 				}
 			case err := <-errChan:
 				if err != nil {
-					log.Trace().Msgf("processJobs: received error from worker: %s", err.Error())
+					log.Trace().Msgf("received error from worker: %s", err.Error())
 					go func() {
 						s.globalErrChan <- err
 					}()
@@ -1609,7 +1615,7 @@ func (s *Session) resync(ctx context.Context) error {
 				return true
 			})
 			if !done {
-				log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, i, newItemsCount-i-int(s.skippedCount.Load()), sliderPos*100, estimatedRemaining)
+				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", n, i, sliderPos*100, estimatedRemaining)
 			} else {
 				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, i, sliderPos*100)
 				return
@@ -1731,17 +1737,22 @@ syncAllLoop:
 			job := Job{imageIds, true}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
-			jobChan <- job
-			log.Trace().Msgf("queued job with itemIds: %s", strings.Join(job.imageIds, ", "))
+
+			select {
+			case err := <-s.globalErrChan:
+				if err == errPhotoTakenBeforeFromDate {
+					log.Info().Msg("found photo taken before -from date, stopping sync here")
+					break syncAllLoop
+				}
+				return err
+			case jobChan <- job:
+				log.Trace().Msgf("queued job with itemIds: %s", strings.Join(job.imageIds, ", "))
+			}
 		}
 
 		newItemsCount += len(imageIds)
 	}
 	close(jobChan)
-
-	if err := s.checkForRemovedFiles(ctx); err != nil {
-		return err
-	}
 
 	for err := range s.globalErrChan {
 		if err != errPhotoTakenBeforeFromDate {
@@ -1753,7 +1764,6 @@ syncAllLoop:
 
 func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) (bool, error) {
 	if _, exists := s.foundItems.Load(imageId); exists {
-		log.Warn().Msgf("looks like we've already seen this item, this shouldn't happen")
 		return false, nil
 	}
 
@@ -1795,10 +1805,10 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				imageId := ""
 				if i < len(job.imageIds) {
 					imageId = job.imageIds[i]
-				} else if !job.continueAfter && i >= *batchSizeFlag {
+				} else if !job.continueAfter || (*batchSizeFlag > 0 && i >= *batchSizeFlag) {
 					break
 				}
-				log = log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
+				log := log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
 
 				log.Trace().Msgf("processing batch item %d", i)
 				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan)
@@ -1810,6 +1820,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 					}
 					if i >= len(job.imageIds) {
+						log.Debug().Msgf("ending batch due to skipped item and no more items in batch")
 						break
 					} else {
 						resultChan <- ""
@@ -1834,12 +1845,14 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		expectedLocation = s.getPhotoUrl(imageId)
 	}
 
-	var location string
-	if err := chromedp.Run(ctx, chromedp.Location(&location)); err != nil {
+	var previousLocation string
+	if err := chromedp.Run(ctx, chromedp.Location(&previousLocation)); err != nil {
 		return "", fmt.Errorf("error getting location: %w", err)
 	}
-	atExpectedUrl := location == expectedLocation
-	if !atExpectedUrl && strings.HasPrefix(location, gphotosUrl) {
+	log.Trace().Msgf("current location: %s", previousLocation)
+	atExpectedUrl := previousLocation == expectedLocation
+	if !atExpectedUrl && strings.HasPrefix(previousLocation, gphotosUrl) {
+		var location string
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
 		err := chromedp.Run(ctx,
@@ -1851,6 +1864,8 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 				func(ctx context.Context) error {
 					if expectedLocation != "" && location != expectedLocation {
 						log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
+					} else if expectedLocation == "" && location == previousLocation {
+						log.Error().Msgf("after nav to right, got same location %s", location)
 					} else {
 						atExpectedUrl = true
 					}
@@ -1860,31 +1875,18 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		)
 		if err != nil {
 			log.Error().Msgf("error navigating to next batch item: %s", err.Error())
-		} else {
+		} else if atExpectedUrl {
 			log.Trace().Msgf("done navigating to %v by right arrow press", expectedLocation)
 		}
 	}
 
 	if !atExpectedUrl {
-		if expectedLocation == "" {
+		if imageId == "" {
 			return "", errAbortBatch
 		}
-		log.Trace().Msgf("navigating to %v", expectedLocation)
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
-		if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
-			log.Error().Msgf("error navigating to %v: %s, will try again", expectedLocation, err.Error())
-			time.Sleep(100 * time.Millisecond)
-			resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(expectedLocation))
-		}
-		if err != nil {
-			return "", fmt.Errorf("error navigating to %v: %w", expectedLocation, err)
-		}
-		if resp.Status == http.StatusOK {
-			if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
-				return "", fmt.Errorf("error waiting for body: %w", err)
-			}
-		} else {
-			return "", fmt.Errorf("unexpected response: %v", resp.Status)
+		log.Trace().Msgf("navigating to expected location")
+		if err := s.navigateToPhoto(ctx, imageId); err != nil {
+			return "", err
 		}
 	}
 
