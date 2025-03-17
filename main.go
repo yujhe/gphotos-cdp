@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/evilsocket/islazy/zip"
@@ -70,7 +71,7 @@ var (
 	jsonLogFlag     = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag    = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
 	removedFlag     = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
-	workersFlag     = flag.Int("workers", 1, "number of concurrent downloads allowed")
+	workersFlag     = flag.Int64("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
 	batchSizeFlag   = flag.Int("batchsize", 0, "number of photos to download in one batch")
@@ -240,10 +241,11 @@ type Session struct {
 	startNodeParent  *cdp.Node
 	globalErrChan    chan error
 	photoRelPath     string
-	existingItems    map[string]struct{}
+	existingItems    sync.Map
 	foundItems       sync.Map
-	downloadedItems  map[string]struct{}
+	downloadedItems  sync.Map
 	newDownloadChan  chan NewDownload
+	skippedCount     atomic.Uint64
 }
 
 func NewSession() (*Session, error) {
@@ -291,12 +293,6 @@ func NewSession() (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	existingDownloadFoldersMap := make(map[string]struct{}, len(downloadDirEntries))
-	for _, e := range downloadDirEntries {
-		if e.IsDir() && e.Name() != "tmp" {
-			existingDownloadFoldersMap[e.Name()] = struct{}{}
-		}
-	}
 
 	downloadDirTmp := filepath.Join(downloadDir, "tmp")
 	if err := os.MkdirAll(downloadDirTmp, 0700); err != nil {
@@ -309,10 +305,15 @@ func NewSession() (*Session, error) {
 		downloadDirTmp:  downloadDirTmp,
 		globalErrChan:   make(chan error, 1),
 		photoRelPath:    photoRelPath,
-		existingItems:   existingDownloadFoldersMap,
-		downloadedItems: make(map[string]struct{}),
 		newDownloadChan: make(chan NewDownload),
 	}
+
+	for _, e := range downloadDirEntries {
+		if e.IsDir() && e.Name() != "tmp" {
+			s.existingItems.Store(e.Name(), struct{}{})
+		}
+	}
+
 	return s, nil
 }
 
@@ -1542,28 +1543,70 @@ func (s *Session) resync(ctx context.Context) error {
 	jobChan := make(chan Job)
 	resultChan := make(chan string, *workersFlag)
 	errChan := make(chan error, *workersFlag)
-	runningWorkers := *workersFlag
-	workerDownloadChanByFrameId := make(map[string]chan NewDownload, *workersFlag)
+	var runningWorkers atomic.Int64
+	runningWorkers.Store(*workersFlag)
+	var workerDownloadChanByFrameId sync.Map
 	for i := range *workersFlag {
 		workerDownloadChan := make(chan NewDownload, 1)
-		workerDownloadChanByFrameId[s.downloadWorker(i+1, jobChan, resultChan, errChan, workerDownloadChan)] = workerDownloadChan
+		workerDownloadChanByFrameId.Store(s.downloadWorker(int(i+1), jobChan, resultChan, errChan, workerDownloadChan), workerDownloadChan)
 	}
 
+	// job channel routing
 	go func(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case newDownload := <-s.newDownloadChan:
-				worker, exists := workerDownloadChanByFrameId[newDownload.targetId]
+				worker, exists := workerDownloadChanByFrameId.Load(newDownload.targetId)
 				if !exists {
 					s.globalErrChan <- fmt.Errorf("worker with targetId %s not found for download", newDownload.targetId)
 					return
 				}
 				go func() {
-					worker <- newDownload
+					worker.(chan NewDownload) <- newDownload
 				}()
-			case <-time.After(5 * time.Millisecond):
+			case res := <-resultChan:
+				if res != "" {
+					if _, exists := s.downloadedItems.Load(res); exists {
+						log.Warn().Msgf("we've downloaded the same item twice, this shouldn't happen")
+					} else {
+						s.downloadedItems.Store(res, struct{}{})
+					}
+				} else {
+					s.skippedCount.Add(1)
+				}
+			case err := <-errChan:
+				runningWorkers.Add(-1)
+				if err != nil {
+					log.Trace().Msgf("processJobs: received error from worker: %s", err.Error())
+					go func() {
+						s.globalErrChan <- err
+					}()
+				}
+			}
+		}
+	}(ctx)
+
+	// progress logger
+	go func(ctx context.Context) {
+		for {
+			done := false
+			select {
+			case <-time.After(60 * time.Second):
+			case <-ctx.Done():
+				done = true
+			}
+			i := 0
+			s.downloadedItems.Range(func(key, value interface{}) bool {
+				i++
+				return true
+			})
+			if !done {
+				log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, i, newItemsCount-i-int(s.skippedCount.Load()), sliderPos*100, estimatedRemaining)
+			} else {
+				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, i, sliderPos*100)
+				return
 			}
 		}
 	}(ctx)
@@ -1598,22 +1641,20 @@ syncAllLoop:
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
-		if err := s.processJobs(&runningWorkers, resultChan, errChan, false); err != nil {
+		select {
+		case err := <-s.globalErrChan:
 			if err == errPhotoTakenBeforeFromDate {
 				log.Info().Msg("found photo taken before -from date, stopping sync here")
 				break syncAllLoop
 			}
 			return err
+		default:
 		}
 
 		if n < 5 || sliderPos < 0.001 {
 			estimatedRemaining = 50
 		} else {
 			estimatedRemaining = int(math.Floor((1/sliderPos - 1) * float64(n+30)))
-		}
-
-		if timedLogReady("resyncLoop", 60*time.Second) {
-			log.Info().Msgf("so far: synced %d items, downloaded %d, %d in queue, progress: %.2f%%, estimated remaining: %d", n, len(s.downloadedItems), newItemsCount-len(s.downloadedItems), sliderPos*100, estimatedRemaining)
 		}
 
 		if n != 0 && i >= len(nodes) {
@@ -1677,14 +1718,6 @@ syncAllLoop:
 			}
 
 			imageIds = append(imageIds, imageId)
-
-			if timedLogReady("showAriaLabel", 60*time.Second) {
-				ariaLabel, err := s.getAriaLabel(ctx, log, lastNode)
-				if err != nil {
-					return fmt.Errorf("error getting item aria label, %w", err)
-				}
-				log.Info().Msgf("processing photo %v", ariaLabel)
-			}
 		}
 
 		if len(imageIds) > 0 {
@@ -1692,50 +1725,27 @@ syncAllLoop:
 			job := Job{imageIds, true}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
-		sendJobLoop:
-			for {
-				select {
-				case jobChan <- job:
-					break sendJobLoop
-				default:
-					time.Sleep(100 * time.Millisecond)
-					if err := s.processJobs(&runningWorkers, resultChan, errChan, false); err != nil {
-						if err == errPhotoTakenBeforeFromDate {
-							log.Info().Msg("found photo taken before -from date, stopping sync here")
-							break syncAllLoop
-						}
-						return err
-					}
-				}
-			}
+			jobChan <- job
 			log.Trace().Msgf("queued job with itemIds: %s", strings.Join(job.imageIds, ", "))
 		}
 
 		newItemsCount += len(imageIds)
 	}
 	close(jobChan)
-	log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, len(s.downloadedItems), sliderPos*100)
 
 	if err := s.checkForRemovedFiles(ctx); err != nil {
 		return err
 	}
-	return s.processJobs(&runningWorkers, resultChan, errChan, true)
-}
 
-func (s *Session) getAriaLabel(ctx context.Context, log zerolog.Logger, node *cdp.Node) (string, error) {
-	ariaLabel := ""
-	if jsNode, err := dom.ResolveNode().WithNodeID(node.NodeID).Do(ctx); err != nil {
-		log.Err(err).Msgf("error resolving object id of node, %s", err.Error())
-	} else {
-		if err := chromedp.Run(ctx, chromedp.CallFunctionOn(`function() { return this.ariaLabel }`, &ariaLabel,
-			func(p *cdpruntime.CallFunctionOnParams) *cdpruntime.CallFunctionOnParams {
-				return p.WithObjectID(jsNode.ObjectID)
-			},
-		)); err != nil {
-			log.Err(err).Msgf("error reading node ariaLabel, %s", err.Error())
+	select {
+	case err := <-s.globalErrChan:
+		if err != nil && err != errPhotoTakenBeforeFromDate {
+			return err
 		}
+	default:
 	}
-	return ariaLabel, nil
+
+	return nil
 }
 
 func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) (bool, error) {
@@ -1935,14 +1945,15 @@ func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 	if *removedFlag {
 		log.Info().Msg("checking for removed files")
 		deleted := []string{}
-		for itemId := range s.existingItems {
+		s.existingItems.Range(func(itemId, _ interface{}) bool {
 			if itemId != "tmp" {
 				// Check if the folder name is in the map of photo IDs
 				if _, exists := s.foundItems.Load(itemId); !exists {
-					deleted = append(deleted, itemId)
+					deleted = append(deleted, itemId.(string))
 				}
 			}
-		}
+			return true
+		})
 		if len(deleted) > 0 {
 			log.Info().Msgf("folders found for %d local photos that were not found in this sync. Checking google photos to confirm they are not there", len(deleted))
 		}
@@ -1978,45 +1989,6 @@ func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Session) processJobs(runningWorkers *int, resultChan chan string, errChan chan error, waitForAll bool) error {
-	for range 50000 {
-	emptyChannelsLoop:
-		for {
-			select {
-			case res := <-resultChan:
-				if res != "" {
-					s.foundItems.Store(res, struct{}{})
-					if _, exists := s.downloadedItems[res]; exists {
-						log.Warn().Msgf("we've downloaded the same item twice, this shouldn't happen")
-					} else {
-						s.downloadedItems[res] = struct{}{}
-					}
-				}
-			case err := <-errChan:
-				*runningWorkers--
-				if err == errPhotoTakenBeforeFromDate && waitForAll {
-					log.Info().Msgf("skipping photo taken before -from date. If you see more than %d of these messages, something has gone wrong.", *workersFlag)
-				} else if err != nil {
-					log.Trace().Msgf("processJobs: received error from worker: %s", err.Error())
-					return err
-				}
-			case err := <-s.globalErrChan:
-				return err
-			default:
-				break emptyChannelsLoop
-			}
-		}
-
-		if *runningWorkers == 0 || !waitForAll {
-			return nil
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	return errors.New("waited too long for jobs to exit, exiting")
 }
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
@@ -2095,7 +2067,7 @@ func getContentOfFirstVisibleNodeScript(sel string, imageId string) string {
 }
 
 func (s *Session) dirHasFiles(imageId string) (bool, error) {
-	if _, ok := s.existingItems[imageId]; !ok {
+	if _, exists := s.existingItems.Load(imageId); !exists {
 		return false, nil
 	}
 	entries, err := os.ReadDir(filepath.Join(s.downloadDir, imageId))
