@@ -1597,9 +1597,7 @@ func (s *Session) resync(ctx context.Context) error {
 			case err := <-errChan:
 				if err != nil {
 					log.Trace().Msgf("received error from worker: %s", err.Error())
-					go func() {
-						s.globalErrChan <- err
-					}()
+					s.globalErrChan <- err
 				}
 				if runningWorkers.Add(-1) == 0 {
 					s.globalErrChan <- nil
