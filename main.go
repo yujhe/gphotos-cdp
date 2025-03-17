@@ -1087,7 +1087,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	for {
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
-		if err := s.checkForStillProcessing(ctx); err != nil && errors.Is(err, context.DeadlineExceeded) {
+		if err := s.checkForStillProcessing(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return NewDownload{}, nil, fmt.Errorf("error checking for still processing %w", err)
 		}
 
@@ -1173,13 +1173,6 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 			// Sometimes Google returns a different error, check for that too
 			if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.NoWebpageFoundText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 				return err
-			}
-			if isStillProcessing {
-				log.Info().Msgf("this is an error page, we will navigate back to the photo to be able to continue")
-				if err := navWithAction(ctx, chromedp.NavigateBack()); err != nil {
-					return err
-				}
-				time.Sleep(400 * time.Millisecond)
 			}
 		}
 	}
@@ -1612,6 +1605,8 @@ func (s *Session) resync(ctx context.Context) error {
 
 	// progress logger
 	go func(ctx context.Context) {
+		lastN := 0
+		unchangedNCount := 0
 		for {
 			done := false
 			select {
@@ -1630,6 +1625,16 @@ func (s *Session) resync(ctx context.Context) error {
 				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, i, sliderPos*100)
 				return
 			}
+			if i == lastN {
+				unchangedNCount++
+				if unchangedNCount > 10 {
+					s.globalErrChan <- fmt.Errorf("no new items processed for 10 minutes, stopping sync")
+					return
+				}
+			} else {
+				unchangedNCount = 0
+			}
+			lastN = n
 		}
 	}(ctx)
 
