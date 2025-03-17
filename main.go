@@ -480,6 +480,9 @@ func (s *Session) getLocale(ctx context.Context) (string, error) {
 }
 
 func captureScreenshot(ctx context.Context, filePath string) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	var buf []byte
 
 	log.Trace().Msgf("saving screenshot to %v", filePath+".png")
@@ -1375,13 +1378,11 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			select {
 			case <-ctx.Done():
 				errChan <- ctx.Err()
-				close(errChan)
 				return
 			case <-time.After(60 * time.Second):
 				log.Trace().Msgf("downloadAndProcessItem: waiting for %d jobs to finish", jobsRemaining)
 			case <-deadline.C:
 				errChan <- fmt.Errorf("downloadAndProcessItem: timeout waiting for %d jobs to finish, canceling", jobsRemaining)
-				close(errChan)
 				return
 			}
 		}
@@ -1398,6 +1399,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			// Error downloading original or generated image, remove files already downloaded
 			if err := os.RemoveAll(filepath.Join(s.downloadDir, imageId)); err != nil {
 				log.Err(err).Msgf("error removing files already downloaded: %v", err)
+			} else {
+				log.Debug().Msgf("removed files already downloaded for item that failed to complete")
 			}
 
 			return err
