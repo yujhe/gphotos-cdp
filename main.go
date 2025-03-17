@@ -806,7 +806,7 @@ func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
 		return err
 	}
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	log.Trace().Msgf("done requesting download (method 1)")
 	return nil
 }
@@ -1491,7 +1491,7 @@ func listenNavEvents(ctx context.Context) {
 						cl.navDone <- true
 						break
 					}
-					time.Sleep(25 * time.Millisecond)
+					time.Sleep(10 * time.Millisecond)
 				}
 			}()
 		}
@@ -1870,7 +1870,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		err := chromedp.Run(ctx,
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
 			chromedp.ActionFunc(navRight),
-			chromedp.Sleep(50*time.Millisecond),
+			chromedp.Sleep(10*time.Millisecond),
 			chromedp.Location(&location),
 			chromedp.ActionFunc(
 				func(ctx context.Context) error {
