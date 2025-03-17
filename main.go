@@ -149,30 +149,29 @@ func main() {
 
 	s, err := NewSession()
 	if err != nil {
-		log.Err(err).Msgf("failed to create session")
-		return
+		log.Fatal().Msgf("failed to create session: %v", err)
 	}
 	defer s.Shutdown()
 
 	log.Info().Msgf("session dir: %v", s.profileDir)
 
 	if err := s.cleanDownloadDir(); err != nil {
-		log.Err(err).Msgf("failed to clean download directory %v", s.downloadDir)
-		return
+		log.Fatal().Msgf("failed to clean download directory %v: %v", s.downloadDir, err)
 	}
 
 	ctx, cancel := s.NewWindow()
 	defer cancel()
 
-	if err := s.login(ctx); err != nil {
-		log.Err(err).Msg("login failed")
-		return
+	startupCtx, startupCancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer startupCancel()
+
+	if err := s.login(startupCtx); err != nil {
+		log.Fatal().Msgf("login failed: %v", err)
 	}
 
-	locale, err := s.getLocale(ctx)
+	locale, err := s.getLocale(startupCtx)
 	if err != nil {
-		log.Err(err).Msg("checking the locale failed")
-		return
+		log.Fatal().Msgf("failed to get locale: %v", err)
 	}
 
 	initLocales()
@@ -184,11 +183,12 @@ func main() {
 		loc = _loc
 	}
 
-	if err := chromedp.Run(ctx,
+	if err := chromedp.Run(startupCtx,
 		chromedp.ActionFunc(s.firstNav),
 	); err != nil {
 		log.Fatal().Msgf("failed to run first nav: %v", err)
 	}
+	startupCancel()
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.resync),
@@ -976,6 +976,9 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
 func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId string) (PhotoData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	var filename string
 	var dateStr string
 	var timeStr string
@@ -1084,8 +1087,8 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	for {
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
-		if err := s.checkForStillProcessing(ctx); err != nil {
-			return NewDownload{}, nil, err
+		if err := s.checkForStillProcessing(ctx); err != nil && errors.Is(err, context.DeadlineExceeded) {
+			return NewDownload{}, nil, fmt.Errorf("error checking for still processing %w", err)
 		}
 
 		select {
@@ -1263,7 +1266,7 @@ progressLoop:
 			}
 		}
 		if !foundExpectedFile {
-			log.Warn().Msgf("expected file %v not found in downloaded zip", data.filename)
+			log.Warn().Msgf("expected file %v not found in downloaded zip (found %s)", data.filename, strings.Join(filePaths, ", "))
 		}
 	} else {
 		var filename string
@@ -1741,7 +1744,7 @@ syncAllLoop:
 
 		if len(imageIds) > 0 {
 			log.Debug().Msgf("adding %d items to queue", len(imageIds))
-			job := Job{imageIds, true}
+			job := Job{imageIds, *workersFlag == 1}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
 
@@ -1948,9 +1951,12 @@ func navRight(ctx context.Context) error {
 // Check if there are folders in the download dir that were not seen in gphotos
 func (s *Session) checkForRemovedFiles(ctx context.Context) error {
 	if *removedFlag {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+
 		log.Info().Msg("checking for removed files")
 		deleted := []string{}
-		s.existingItems.Range(func(itemId, _ interface{}) bool {
+		s.existingItems.Range(func(itemId, _ any) bool {
 			if itemId != "tmp" {
 				// Check if the folder name is in the map of photo IDs
 				if _, exists := s.foundItems.Load(itemId); !exists {
