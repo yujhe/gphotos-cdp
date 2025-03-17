@@ -1517,6 +1517,9 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 // If any photos are missing we can asynchronously create a new chromedp context, then in that
 // context navigate to that photo and call downloadAndProcessItem
 func (s *Session) resync(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	listenNavEvents(ctx)
 
 	lastNode := &cdp.Node{}
@@ -1577,12 +1580,15 @@ func (s *Session) resync(ctx context.Context) error {
 					s.skippedCount.Add(1)
 				}
 			case err := <-errChan:
-				runningWorkers.Add(-1)
 				if err != nil {
 					log.Trace().Msgf("processJobs: received error from worker: %s", err.Error())
 					go func() {
 						s.globalErrChan <- err
 					}()
+				}
+				if runningWorkers.Add(-1) == 0 {
+					s.globalErrChan <- nil
+					return
 				}
 			}
 		}
@@ -1737,14 +1743,11 @@ syncAllLoop:
 		return err
 	}
 
-	select {
-	case err := <-s.globalErrChan:
-		if err != nil && err != errPhotoTakenBeforeFromDate {
+	for err := range s.globalErrChan {
+		if err != errPhotoTakenBeforeFromDate {
 			return err
 		}
-	default:
 	}
-
 	return nil
 }
 
@@ -1777,6 +1780,9 @@ func (s *Session) getPhotoUrl(imageId string) string {
 func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error, downloadChan <-chan NewDownload) string {
 	ctx, cancel := chromedp.NewContext(s.parentContext)
 	chromedp.Run(ctx)
+	ctx = SetContextData(ctx)
+	listenNavEvents(ctx)
+
 	log := log.With().Int("workerId", workerId).Logger()
 	go func() {
 		defer cancel()
@@ -1798,16 +1804,11 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan)
 				if err == errAbortBatch {
 					break
-				} else if err == errAlreadyDownloaded {
-					if i >= len(job.imageIds) {
-						break
-					} else {
-						resultChan <- ""
-						continue
+				} else if err == errAlreadyDownloaded || err == errStillProcessing {
+					if err == errStillProcessing {
+						// Old highlight videos are no longer available
+						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 					}
-				} else if err == errStillProcessing {
-					// Old highlight videos are no longer available
-					log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 					if i >= len(job.imageIds) {
 						break
 					} else {
@@ -1831,14 +1832,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 	expectedLocation := ""
 	if imageId != "" {
 		expectedLocation = s.getPhotoUrl(imageId)
-
-		if _, exists := s.foundItems.Load(imageId); exists {
-			return "", errAlreadyDownloaded
-		}
 	}
-
-	ctx = SetContextData(ctx)
-	listenNavEvents(ctx)
 
 	var location string
 	if err := chromedp.Run(ctx, chromedp.Location(&location)); err != nil {
@@ -1894,7 +1888,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		}
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
 
 	if imageId == "" {
 		var location string
