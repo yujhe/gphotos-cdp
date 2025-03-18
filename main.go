@@ -1265,15 +1265,15 @@ progressLoop:
 		foundExpectedFile := false
 		baseNames := []string{}
 		for _, f := range filePaths {
-			// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
+			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
 			filename := filepath.Base(f)
 			baseNames = append(baseNames, filename)
 			if strings.EqualFold(filename, data.filename) {
 				foundExpectedFile = true
 				break
 			}
-			basenameNoExt, isJpg := strings.CutSuffix(filename, ".jpg")
-			if isJpg && len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
+			basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename)) + "."
+			if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
 				foundExpectedFile = true
 				break
 			}
@@ -1294,9 +1294,9 @@ progressLoop:
 			foundExpectedFile := strings.EqualFold(filename, data.filename)
 
 			if !foundExpectedFile {
-				// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
-				basename, isJpg := strings.CutSuffix(filename, ".jpg")
-				if isJpg && len(data.filename) >= len(basename) && strings.EqualFold(basename, data.filename[:len(basename)]) {
+				// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
+				basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename)) + "."
+				if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
 					foundExpectedFile = true
 				}
 			}
