@@ -1258,7 +1258,14 @@ progressLoop:
 		}
 		foundExpectedFile := false
 		for _, f := range filePaths {
-			if strings.Contains(strings.ToLower(f), strings.ToLower(data.filename)) {
+			// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
+			filename := filepath.Base(f)
+			if strings.EqualFold(filename, data.filename) {
+				foundExpectedFile = true
+				break
+			}
+			basename, isJpg := strings.CutSuffix(filename, ".jpg")
+			if isJpg && len(data.filename) >= len(basename) && strings.EqualFold(basename, data.filename[:len(basename)]) {
 				foundExpectedFile = true
 				break
 			}
@@ -1276,12 +1283,14 @@ progressLoop:
 
 		if isOriginal || !hasOriginal {
 			// Warn if filename is not the expected filename
-			warn := !strings.Contains(filename, data.filename)
+			warn := !strings.EqualFold(filename, data.filename)
 
-			// Google always converts PNGs to JPGs, don't warn about this
-			if strings.HasSuffix(strings.ToLower(data.filename), ".png") &&
-				strings.TrimSuffix(strings.ToLower(filename), ".jpg") == strings.TrimSuffix(strings.ToLower(data.filename), ".png") {
-				warn = false
+			if warn {
+				// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
+				basename, isJpg := strings.CutSuffix(filename, ".jpg")
+				if isJpg && len(data.filename) >= len(basename) && strings.EqualFold(basename, data.filename[:len(basename)]) {
+					warn = false
+				}
 			}
 
 			if warn {
