@@ -1633,10 +1633,19 @@ func (s *Session) resync(ctx context.Context) error {
 				downloadedCount++
 				return true
 			})
-			syncedCount := n + downloadedCount
+			syncedCount := 0
+			s.foundItems.Range(func(key, value interface{}) bool {
+				syncedCount++
+				return true
+			})
+			// sliderPos doesn't get updated if worker keeps going beyond batch, calculate progress again here
 			progressPercent := float64(syncedCount) / float64(estimatedRemaining+n) * 100
+			if progressPercent > 100 {
+				progressPercent = 100
+			}
+			estimatedRemaining := int(math.Floor((100/progressPercent - 100) * float64(syncedCount)))
 			if !done {
-				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progressPercent, estimatedRemaining-downloadedCount)
+				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progressPercent, estimatedRemaining)
 			} else {
 				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progressPercent)
 				return
@@ -1798,20 +1807,20 @@ func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) 
 		return false, nil
 	}
 
-	if markFound {
-		s.foundItems.Store(imageId, struct{}{})
-		log.Trace().Msgf("processing %v", imageId)
-	}
-
+	isNew := true
 	hasFiles, err := s.dirHasFiles(imageId)
 	if err != nil {
 		return false, err
 	} else if hasFiles {
 		log.Trace().Msgf("skipping item, already downloaded")
-		return false, nil
+		isNew = false
 	}
 
-	return true, nil
+	if markFound || !isNew {
+		s.foundItems.Store(imageId, struct{}{})
+	}
+
+	return isNew, nil
 }
 
 func (s *Session) getPhotoUrl(imageId string) string {
