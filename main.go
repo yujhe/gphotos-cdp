@@ -46,6 +46,7 @@ import (
 	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
@@ -951,15 +952,20 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	url := s.getPhotoUrl(imageId)
 	log.Trace().Msgf("navigating to %v", url)
-	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(url))
-	if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && resp == nil) {
-		err = errNavigateAborted
-	}
-	if errors.Is(err, errNavigateAborted) {
-		// retry
-		log.Error().Msgf("error navigating to %v: %s, will try again", url, err.Error())
-		time.Sleep(100 * time.Millisecond)
+	var resp *network.Response
+	var err error
+	for range 5 {
 		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(url))
+		if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && resp == nil) {
+			err = errNavigateAborted
+		}
+		if errors.Is(err, errNavigateAborted) {
+			// retry
+			log.Error().Msgf("error navigating to %v: %s, will try again", url, err.Error())
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("error navigating to %v: %w", url, err)
