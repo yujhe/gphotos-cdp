@@ -1624,11 +1624,7 @@ func (s *Session) resync(ctx context.Context) error {
 				downloadedCount++
 				return true
 			})
-			syncedCount := 0
-			s.foundItems.Range(func(key, value interface{}) bool {
-				syncedCount++
-				return true
-			})
+			syncedCount := n + downloadedCount
 			progressPercent := float64(syncedCount) / float64(estimatedRemaining+n) * 100
 			if !done {
 				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progressPercent, estimatedRemaining-downloadedCount)
