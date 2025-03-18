@@ -87,6 +87,7 @@ var errPhotoTakenBeforeFromDate = errors.New("photo taken before from date")
 var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var errAlreadyDownloaded = errors.New("photo already downloaded")
 var errAbortBatch = errors.New("abort batch")
+var errNavigateAborted = errors.New("navigate aborted")
 var fromDate time.Time
 var toDate time.Time
 var loc GPhotosLocale
@@ -934,7 +935,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 		} else if i >= 3 {
 			log.Debug().Msgf("trying to request download with method 2 %d times, giving up now", i)
 			break
-		} else if err == errCouldNotPressDownloadButton || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
+		} else if errors.Is(err, errCouldNotPressDownloadButton) || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
 			log.Debug().Msgf("trying to request download with method 2 again after error: %v", err)
 		} else {
 			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
@@ -951,7 +952,11 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	url := s.getPhotoUrl(imageId)
 	log.Trace().Msgf("navigating to %v", url)
 	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(url))
-	if err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED") {
+	if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && resp == nil) {
+		err = errNavigateAborted
+	}
+	if errors.Is(err, errNavigateAborted) {
+		// retry
 		log.Error().Msgf("error navigating to %v: %s, will try again", url, err.Error())
 		time.Sleep(100 * time.Millisecond)
 		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(url))
@@ -960,13 +965,13 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 		return fmt.Errorf("error navigating to %v: %w", url, err)
 	}
 	if resp == nil {
-		return fmt.Errorf("unexpected response: nil")
+		return fmt.Errorf("unexpected response navigating to item %s: nil", imageId)
 	} else if resp.Status == http.StatusOK {
 		if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
 			return fmt.Errorf("error waiting for body: %w", err)
 		}
 	} else {
-		return fmt.Errorf("unexpected response: %v", resp.Status)
+		return fmt.Errorf("unexpected response navigating to item %s: %v", imageId, resp.Status)
 	}
 	return nil
 }
@@ -1088,13 +1093,13 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 	for {
 		// Checking for gphotos warning that this video can't be downloaded (no known solution)
 		if err := s.checkForStillProcessing(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return NewDownload{}, nil, fmt.Errorf("error checking for still processing %w", err)
+			return NewDownload{}, nil, fmt.Errorf("error checking for still processing, %w", err)
 		}
 
 		select {
 		case <-requestTimer.C:
 			if err := requestDownload2(ctx, log, imageId, isOriginal, hasOriginal); err != nil {
-				if isOriginal || err != errCouldNotPressDownloadButton {
+				if isOriginal || !errors.Is(err, errCouldNotPressDownloadButton) {
 					return NewDownload{}, nil, err
 				} else if !isOriginal {
 					requestDownload1(ctx, log)
@@ -1605,8 +1610,8 @@ func (s *Session) resync(ctx context.Context) error {
 
 	// progress logger
 	go func(ctx context.Context) {
-		lastN := 0
-		unchangedNCount := 0
+		lastSyncedCount := 0
+		iterationsWithNoProgressCount := 0
 		for {
 			done := false
 			select {
@@ -1614,27 +1619,33 @@ func (s *Session) resync(ctx context.Context) error {
 			case <-ctx.Done():
 				done = true
 			}
-			i := 0
+			downloadedCount := 0
 			s.downloadedItems.Range(func(key, value interface{}) bool {
-				i++
+				downloadedCount++
 				return true
 			})
+			syncedCount := 0
+			s.foundItems.Range(func(key, value interface{}) bool {
+				syncedCount++
+				return true
+			})
+			progressPercent := float64(syncedCount) / float64(estimatedRemaining+n) * 100
 			if !done {
-				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", n, i, sliderPos*100, estimatedRemaining)
+				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progressPercent, estimatedRemaining-downloadedCount)
 			} else {
-				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", n, i, sliderPos*100)
+				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progressPercent)
 				return
 			}
-			if i == lastN {
-				unchangedNCount++
-				if unchangedNCount > 10 {
+			if syncedCount == lastSyncedCount {
+				iterationsWithNoProgressCount++
+				if iterationsWithNoProgressCount > 10 {
 					s.globalErrChan <- fmt.Errorf("no new items processed for 10 minutes, stopping sync")
 					return
 				}
 			} else {
-				unchangedNCount = 0
+				iterationsWithNoProgressCount = 0
 			}
-			lastN = n
+			lastSyncedCount = syncedCount
 		}
 	}(ctx)
 
@@ -1670,7 +1681,7 @@ syncAllLoop:
 
 		select {
 		case err := <-s.globalErrChan:
-			if err == errPhotoTakenBeforeFromDate {
+			if errors.Is(err, errPhotoTakenBeforeFromDate) {
 				log.Info().Msg("found photo taken before -from date, stopping sync here")
 				break syncAllLoop
 			}
@@ -1755,7 +1766,7 @@ syncAllLoop:
 
 			select {
 			case err := <-s.globalErrChan:
-				if err == errPhotoTakenBeforeFromDate {
+				if errors.Is(err, errPhotoTakenBeforeFromDate) {
 					log.Info().Msg("found photo taken before -from date, stopping sync here")
 					break syncAllLoop
 				}
@@ -1770,7 +1781,7 @@ syncAllLoop:
 	close(jobChan)
 
 	for err := range s.globalErrChan {
-		if err != errPhotoTakenBeforeFromDate {
+		if !errors.Is(err, errPhotoTakenBeforeFromDate) {
 			return err
 		}
 	}
@@ -1829,10 +1840,10 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				log.Trace().Msgf("processing batch item %d", i)
 				downloadedItemId, err := s.doWorkerBatchItem(ctx, log, imageId, downloadChan, isConsecutive)
 				isConsecutive = true
-				if err == errAbortBatch {
+				if errors.Is(err, errAbortBatch) {
 					break
-				} else if err == errAlreadyDownloaded || err == errStillProcessing {
-					if err == errStillProcessing {
+				} else if errors.Is(err, errAlreadyDownloaded) || errors.Is(err, errStillProcessing) {
+					if errors.Is(err, errStillProcessing) {
 						// Old highlight videos are no longer available
 						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 						isConsecutive = false
@@ -1936,7 +1947,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 			return s.downloadAndProcessItem(ctx, log, imageId, downloadChan)
 		},
 	))
-	if err == errPhotoTakenAfterToDate {
+	if errors.Is(err, errPhotoTakenAfterToDate) {
 		log.Warn().Msg("skipping photo taken after -to date. If you see many of these messages, something has gone wrong.")
 	} else if err != nil {
 		log.Trace().Msgf("downloadWorker: encountered error while processing batch item: %s", err.Error())
