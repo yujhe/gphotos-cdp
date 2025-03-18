@@ -1257,21 +1257,23 @@ progressLoop:
 			return err
 		}
 		foundExpectedFile := false
+		baseNames := []string{}
 		for _, f := range filePaths {
 			// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
 			filename := filepath.Base(f)
+			baseNames = append(baseNames, filename)
 			if strings.EqualFold(filename, data.filename) {
 				foundExpectedFile = true
 				break
 			}
-			basename, isJpg := strings.CutSuffix(filename, ".jpg")
-			if isJpg && len(data.filename) >= len(basename) && strings.EqualFold(basename, data.filename[:len(basename)]) {
+			basenameNoExt, isJpg := strings.CutSuffix(filename, ".jpg")
+			if isJpg && len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
 				foundExpectedFile = true
 				break
 			}
 		}
 		if !foundExpectedFile {
-			log.Warn().Msgf("expected file %v not found in downloaded zip (found %s)", data.filename, strings.Join(filePaths, ", "))
+			return fmt.Errorf("expected file %s not found in downloaded zip (found %s) for %s", data.filename, strings.Join(baseNames, ", "), imageId)
 		}
 	} else {
 		var filename string
@@ -1282,19 +1284,19 @@ progressLoop:
 		}
 
 		if isOriginal || !hasOriginal {
-			// Warn if filename is not the expected filename
-			warn := !strings.EqualFold(filename, data.filename)
+			// Error if filename is not the expected filename
+			foundExpectedFile := strings.EqualFold(filename, data.filename)
 
-			if warn {
+			if !foundExpectedFile {
 				// Google recently started converting images to JPGs, don't warn about this because it gets too verbose
 				basename, isJpg := strings.CutSuffix(filename, ".jpg")
 				if isJpg && len(data.filename) >= len(basename) && strings.EqualFold(basename, data.filename[:len(basename)]) {
-					warn = false
+					foundExpectedFile = true
 				}
 			}
 
-			if warn {
-				log.Warn().Msgf("expected file %v but downloaded file %v", data.filename, filename)
+			if !foundExpectedFile {
+				return fmt.Errorf("expected file %s but downloaded file %s for %s", data.filename, filename, imageId)
 			}
 		}
 
