@@ -956,7 +956,7 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	var err error
 	for range 5 {
 		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(url))
-		if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && resp == nil) {
+		if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && (resp == nil || resp.Status == 504)) {
 			err = errNavigateAborted
 		}
 		if errors.Is(err, errNavigateAborted) {
@@ -1268,7 +1268,7 @@ progressLoop:
 			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
 			filename := filepath.Base(f)
 			baseNames = append(baseNames, filename)
-			if strings.EqualFold(filename, data.filename) {
+			if strings.EqualFold(filename, data.filename) || strings.EqualFold(filename, strings.TrimPrefix(data.filename, ".")) {
 				foundExpectedFile = true
 				break
 			}
@@ -1291,7 +1291,7 @@ progressLoop:
 
 		if isOriginal || !hasOriginal {
 			// Error if filename is not the expected filename
-			foundExpectedFile := strings.EqualFold(filename, data.filename)
+			foundExpectedFile := strings.EqualFold(filename, data.filename) || strings.EqualFold(filename, strings.TrimPrefix(data.filename, "."))
 
 			if !foundExpectedFile {
 				// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
