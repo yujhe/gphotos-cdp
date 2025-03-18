@@ -1639,15 +1639,12 @@ func (s *Session) resync(ctx context.Context) error {
 				return true
 			})
 			// sliderPos doesn't get updated if worker keeps going beyond batch, calculate progress again here
-			progressPercent := float64(syncedCount) / float64(estimatedRemaining+n) * 100
-			if progressPercent > 100 {
-				progressPercent = 100
-			}
-			estimatedRemaining := int(math.Floor((100/progressPercent - 100) * float64(syncedCount)))
+			progress := min(float64(syncedCount)/float64(estimatedRemaining+n), 1)
+			estimatedRemaining := int(math.Floor((1/progress - 1) * float64(syncedCount)))
 			if !done {
-				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progressPercent, estimatedRemaining)
+				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progress*100, estimatedRemaining)
 			} else {
-				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progressPercent)
+				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progress*100)
 				return
 			}
 			if syncedCount == lastSyncedCount {
