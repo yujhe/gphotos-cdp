@@ -1258,6 +1258,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 	}
 
 	var filePaths []string
+	baseNames := []string{}
 	if strings.HasSuffix(downloadInfo.suggestedFilename, ".zip") {
 		var err error
 		filePaths, err = s.handleZip(log, filepath.Join(s.downloadDirTmp, downloadInfo.GUID), outDir)
@@ -1265,7 +1266,6 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 			return err
 		}
 		foundExpectedFile := false
-		baseNames := []string{}
 		for _, f := range filePaths {
 			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
 			filename := filepath.Base(f)
@@ -1320,6 +1320,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 			return err
 		}
 		filePaths = []string{newFile}
+		baseNames = append(baseNames, filepath.Base(newFile))
 	}
 
 	if err := doFileDateUpdate(data.date, filePaths); err != nil {
@@ -1332,9 +1333,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 		}
 	}
 
-	for _, f := range filePaths {
-		log.Info().Msgf("downloaded %v with date %v", filepath.Base(f), data.date.Format(time.DateOnly))
-	}
+	log.Info().Msgf("downloaded file(s) %s with date %v", strings.Join(baseNames, ", "), data.date.Format(time.DateOnly))
 
 	return nil
 }
