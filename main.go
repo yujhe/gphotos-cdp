@@ -1408,6 +1408,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 					continue
 				}
 				errChan <- err
+				return
 			}
 		}
 	}
