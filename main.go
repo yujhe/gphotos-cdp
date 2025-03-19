@@ -1429,7 +1429,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			case <-time.After(60 * time.Second):
 				log.Trace().Msgf("downloadAndProcessItem: waiting for %d jobs to finish", jobsRemaining)
 			case <-deadline.C:
-				errChan <- fmt.Errorf("downloadAndProcessItem: timeout waiting for %d jobs to finish, canceling", jobsRemaining)
+				errChan <- fmt.Errorf("downloadAndProcessItem: timeout waiting for %d jobs for %s", jobsRemaining, imageId)
 				return
 			}
 		}
@@ -1625,7 +1625,7 @@ func (s *Session) resync(ctx context.Context) error {
 			case newDownload := <-s.newDownloadChan:
 				worker, exists := workerDownloadChanByFrameId.Load(newDownload.targetId)
 				if !exists {
-					s.globalErrChan <- fmt.Errorf("worker with targetId %s not found for download", newDownload.targetId)
+					s.globalErrChan <- fmt.Errorf("worker with targetId %s not found for download of %s", newDownload.targetId, newDownload.suggestedFilename)
 					return
 				}
 				go func() {
@@ -1687,7 +1687,7 @@ func (s *Session) resync(ctx context.Context) error {
 			if syncedCount == lastSyncedCount {
 				iterationsWithNoProgressCount++
 				if iterationsWithNoProgressCount > 10 {
-					s.globalErrChan <- fmt.Errorf("no new items processed for 10 minutes, stopping sync")
+					s.globalErrChan <- fmt.Errorf("no new items processed for 20 minutes, stopping sync")
 					return
 				}
 			} else {
