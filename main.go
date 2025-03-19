@@ -1959,7 +1959,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		return "", errAlreadyDownloaded
 	}
 
-	log.Info().Msgf(`item not found in photos dir downloading it now`)
+	log.Debug().Msgf(`item not found in photos dir, downloading it now`)
 
 	err = chromedp.Run(ctx, chromedp.ActionFunc(
 		func(ctx context.Context) error {
