@@ -89,6 +89,7 @@ var errPhotoTakenAfterToDate = errors.New("photo taken after to date")
 var errAlreadyDownloaded = errors.New("photo already downloaded")
 var errAbortBatch = errors.New("abort batch")
 var errNavigateAborted = errors.New("navigate aborted")
+var errUnexpectedDownload = errors.New("unexpected download")
 var fromDate time.Time
 var toDate time.Time
 var loc GPhotosLocale
@@ -1223,11 +1224,10 @@ func (s *Session) makeOutDir(imageId string) (string, error) {
 	return newDir, nil
 }
 
-// processDownload creates a directory in s.downloadDir with name = imageId and moves the downloaded files into that directory
-func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan <-chan bool, isOriginal, hasOriginal bool, imageId string, photoDataChan chan PhotoData) error {
+func (s *Session) waitForDownload(log zerolog.Logger, downloadInfo NewDownload, downloadProgressChan <-chan bool, imageId string) error {
 	log = log.With().Str("GUID", downloadInfo.GUID).Logger()
 
-	log.Trace().Msgf("entering processDownload")
+	log.Trace().Msgf("entering waitForDownload")
 	downloadTimeout := time.NewTimer(time.Minute)
 progressLoop:
 	for {
@@ -1235,21 +1235,23 @@ progressLoop:
 		case p := <-downloadProgressChan:
 			if p {
 				// download done
-				log.Trace().Msgf("processDownload: received download completed message")
+				log.Trace().Msgf("waitForDownload: received download completed message")
 				break progressLoop
 			} else {
 				// still downloading
-				log.Trace().Msgf("processDownload: received download still in progress message")
+				log.Trace().Msgf("waitForDownload: received download still in progress message")
 				downloadTimeout.Reset(time.Minute)
 			}
 		case <-downloadTimeout.C:
 			return fmt.Errorf("timeout waiting for download to complete for %v", imageId)
 		}
 	}
+	return nil
+}
 
-	log.Trace().Msgf("download completed, will continue processing when photo data is ready")
-	data := <-photoDataChan
-
+// processDownload creates a directory in s.downloadDir with name = imageId and moves the downloaded files into that directory
+func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, isOriginal, hasOriginal bool, imageId string, data PhotoData) error {
+	log.Trace().Msgf("entering processDownload")
 	outDir, err := s.makeOutDir(imageId)
 	if err != nil {
 		return err
@@ -1279,7 +1281,7 @@ progressLoop:
 			}
 		}
 		if !foundExpectedFile {
-			return fmt.Errorf("expected file %s not found in downloaded zip (found %s) for %s", data.filename, strings.Join(baseNames, ", "), imageId)
+			return fmt.Errorf("expected file %s not found in downloaded zip (found %s) for %s (%w)", data.filename, strings.Join(baseNames, ", "), imageId, errUnexpectedDownload)
 		}
 	} else {
 		var filename string
@@ -1302,7 +1304,7 @@ progressLoop:
 			}
 
 			if !foundExpectedFile {
-				return fmt.Errorf("expected file %s but downloaded file %s for %s", data.filename, filename, imageId)
+				return fmt.Errorf("expected file %s but downloaded file %s for %s (%w)", data.filename, filename, imageId, errUnexpectedDownload)
 			}
 		}
 
@@ -1338,7 +1340,7 @@ progressLoop:
 }
 
 // downloadAndProcessItem starts a download then sends it to processDownload for processing
-func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload) error {
+func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string, newDownloadChan <-chan NewDownload) error {
 	log.Trace().Msgf("entering downloadAndProcessItem")
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -1366,29 +1368,54 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		}
 	}()
 
-	go func() {
-		hasOriginal := false
-		downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, false, &hasOriginal, downloadChan)
-		if err != nil {
-			log.Trace().Msgf("download failed: %v", err)
-			errChan <- err
-		} else {
-			errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, false, hasOriginal, imageId, photoDataChan)
-		}
+	startDownloadMu := sync.Mutex{}
+	hasOriginalChan := make(chan bool, 1)
 
-		if hasOriginal {
-			log := log.With().Bool("isOriginal", true).Logger()
-			downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, true, nil, downloadChan)
-			if err != nil {
-				log.Trace().Msgf("download of original failed: %v", err)
-				errChan <- err
-			} else {
-				errChan <- s.processDownload(log, downloadInfo, downloadProgressChan, true, true, imageId, photoDataChan)
-			}
-		} else {
-			errChan <- nil
+	doDownload := func(isOriginal bool) {
+		var hasOriginal bool
+		hasOriginalPtr := &hasOriginal
+		if isOriginal {
+			hasOriginalPtr = nil
+			hasOriginal = true
 		}
-	}()
+		var photoData PhotoData
+		for i := range 3 {
+			startDownloadMu.Lock()
+			downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, isOriginal, hasOriginalPtr, newDownloadChan)
+			startDownloadMu.Unlock()
+			if i == 0 && !isOriginal {
+				hasOriginalChan <- hasOriginal
+			}
+			if err != nil {
+				log.Trace().Msgf("download failed: %v", err)
+				errChan <- err
+				return
+			} else {
+				err := s.waitForDownload(log, downloadInfo, downloadProgressChan, imageId)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				log.Trace().Msgf("download completed, will continue processing when photo data is ready")
+				if photoData == (PhotoData{}) {
+					photoData = <-photoDataChan
+				}
+				err = s.processDownload(log, downloadInfo, isOriginal, hasOriginal, imageId, photoData)
+				if errors.Is(err, errUnexpectedDownload) {
+					continue
+				}
+				errChan <- err
+			}
+		}
+	}
+
+	go doDownload(false)
+	if <-hasOriginalChan {
+		go doDownload(true)
+	} else {
+		jobsRemaining--
+	}
 
 	go func() {
 		deadline := time.NewTimer(30 * time.Minute)
