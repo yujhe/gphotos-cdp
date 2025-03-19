@@ -1300,7 +1300,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 
 			if !foundExpectedFile {
 				// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
-				basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename)) + "."
+				basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename))
 				if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
 					foundExpectedFile = true
 				}
@@ -1381,22 +1381,23 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			hasOriginal = true
 		}
 		var photoData PhotoData
+		var err error
 		for i := range 3 {
+			var downloadInfo NewDownload
+			var downloadProgressChan <-chan bool
 			startDownloadMu.Lock()
-			downloadInfo, downloadProgressChan, err := s.startDownload(ctx, log, imageId, isOriginal, hasOriginalPtr, newDownloadChan)
+			downloadInfo, downloadProgressChan, err = s.startDownload(ctx, log, imageId, isOriginal, hasOriginalPtr, newDownloadChan)
 			startDownloadMu.Unlock()
 			if i == 0 && !isOriginal {
 				hasOriginalChan <- hasOriginal
 			}
 			if err != nil {
 				log.Trace().Msgf("download failed: %v", err)
-				errChan <- err
-				return
+				break
 			} else {
 				err := s.waitForDownload(log, downloadInfo, downloadProgressChan, imageId)
 				if err != nil {
-					errChan <- err
-					return
+					break
 				}
 
 				log.Trace().Msgf("download completed, will continue processing when photo data is ready")
@@ -1405,12 +1406,13 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 				}
 				err = s.processDownload(log, downloadInfo, isOriginal, hasOriginal, imageId, photoData)
 				if errors.Is(err, errUnexpectedDownload) {
+					log.Err(err).Msgf("error processing download for %s (try %d/3)", imageId, i+1)
 					continue
 				}
-				errChan <- err
-				return
+				break
 			}
 		}
+		errChan <- err
 	}
 
 	go doDownload(false)
