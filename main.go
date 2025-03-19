@@ -1270,14 +1270,17 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
 			filename := filepath.Base(f)
 			baseNames = append(baseNames, filename)
+			if foundExpectedFile {
+				continue
+			}
 			if strings.EqualFold(filename, data.filename) || strings.EqualFold(filename, strings.TrimPrefix(data.filename, ".")) {
 				foundExpectedFile = true
-				break
+				continue
 			}
 			basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename)) + "."
 			if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
 				foundExpectedFile = true
-				break
+				continue
 			}
 		}
 		if !foundExpectedFile {
