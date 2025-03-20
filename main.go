@@ -793,7 +793,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 	cl.muNavWaiting.Lock()
 	cl.navWaiting = false
 	cl.muNavWaiting.Unlock()
-	log.Debug().Msgf("navigation took %d ms", time.Since(st).Milliseconds())
+	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("navigation took %d ms", time.Since(st).Milliseconds())
 	return nil
 }
 
@@ -1083,7 +1083,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		return PhotoData{}, fmt.Errorf("parsing date, %w", err)
 	}
 
-	log.Debug().Msgf("found date '%v' and original filename '%v' in %d ms", dt, filename, time.Since(start).Milliseconds())
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("found date '%v' and original filename '%v'", dt, filename)
 
 	return PhotoData{dt, filename}, nil
 }
@@ -1131,7 +1131,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadChan:
 			log.Trace().Msgf("downloadChan: %v", newDownload)
-			log.Debug().Msgf("download started in %d ms", time.Since(start).Milliseconds())
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("download started in %d ms", time.Since(start).Milliseconds())
 			return newDownload, newDownload.progressChan, nil
 		default:
 			time.Sleep(50 * time.Millisecond)
@@ -1343,7 +1343,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 		}
 	}
 
-	log.Debug().Msgf("processed downloaded item in %d ms", time.Since(start).Milliseconds())
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("processed downloaded item in %d ms", time.Since(start).Milliseconds())
 	log.Info().Msgf("downloaded file(s) %s with date %v", strings.Join(baseNames, ", "), data.date.Format(time.DateOnly))
 
 	return nil
@@ -1420,7 +1420,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 					log.Err(err).Msgf("error processing download for %s (try %d/3)", imageId, i+1)
 					continue
 				}
-				log.Debug().Msgf("doDownload done in %d ms", time.Since(start).Milliseconds())
+				log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("doDownload done in %d ms", time.Since(start).Milliseconds())
 				break
 			}
 		}
@@ -1470,7 +1470,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			log.Trace().Msgf("downloadAndProcessItem: job result done, %d jobs remaining", jobsRemaining)
 		}
 		if jobsRemaining == 0 {
-			log.Debug().Msgf("downloadAndProcessItem: all jobs completed in %d ms", time.Since(start).Milliseconds())
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("downloadAndProcessItem: all jobs completed in %d ms", time.Since(start).Milliseconds())
 			return nil
 		}
 	}
@@ -1495,7 +1495,7 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 		return []string{""}, err
 	}
 
-	log.Debug().Msgf("unzipped %v in %v ms", zipfile, time.Since(st).Milliseconds())
+	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("unzipped %v in %v ms", zipfile, time.Since(st).Milliseconds())
 	return files, nil
 }
 
