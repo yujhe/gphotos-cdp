@@ -781,7 +781,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 	cl.muNavWaiting.Lock()
 	cl.navWaiting = true
 	cl.muNavWaiting.Unlock()
-	t := time.NewTimer(time.Minute)
+	t := time.NewTimer(2 * time.Minute)
 	select {
 	case <-cl.navDone:
 		if !t.Stop() {
@@ -998,7 +998,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	var timeStr string
 	var tzStr string
 	timeout1 := time.NewTimer(10 * time.Second)
-	timeout2 := time.NewTimer(90 * time.Second)
+	timeout2 := time.NewTimer(120 * time.Second)
 
 	var n = 0
 	log.Debug().Msg("extracting photo data")
@@ -1095,8 +1095,8 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 	start := time.Now()
 
-	timeoutTimer := time.NewTimer(90 * time.Second)
-	refreshTimer := time.NewTimer(90 * time.Second)
+	timeoutTimer := time.NewTimer(120 * time.Second)
+	refreshTimer := time.NewTimer(120 * time.Second)
 	requestTimer := time.NewTimer(0 * time.Second)
 
 	log.Trace().Msgf("requesting download from tab %s", chromedp.FromContext(ctx).Target.TargetID)
