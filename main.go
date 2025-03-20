@@ -793,7 +793,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 	cl.muNavWaiting.Lock()
 	cl.navWaiting = false
 	cl.muNavWaiting.Unlock()
-	log.Debug().Msgf("navigation took %dms", time.Since(st).Milliseconds())
+	log.Debug().Msgf("navigation took %d ms", time.Since(st).Milliseconds())
 	return nil
 }
 
@@ -1495,7 +1495,7 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 		return []string{""}, err
 	}
 
-	log.Debug().Msgf("unzipped %v in %v", zipfile, time.Since(st))
+	log.Debug().Msgf("unzipped %v in %v ms", zipfile, time.Since(st).Milliseconds())
 	return files, nil
 }
 
