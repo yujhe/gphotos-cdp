@@ -991,6 +991,8 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
+	start := time.Now()
+
 	var filename string
 	var dateStr string
 	var timeStr string
@@ -1081,7 +1083,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		return PhotoData{}, fmt.Errorf("parsing date, %w", err)
 	}
 
-	log.Debug().Msgf("found date: %v and original filename: %v", dt, filename)
+	log.Debug().Msgf("found date '%v' and original filename '%v' in %d ms", dt, filename, time.Since(start).Milliseconds())
 
 	return PhotoData{dt, filename}, nil
 }
@@ -1090,6 +1092,8 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 // with an error if the download does not start within a minute.
 func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId string, isOriginal bool, hasOriginal *bool, downloadChan <-chan NewDownload) (newDownload NewDownload, progressChan <-chan bool, err error) {
 	log.Trace().Msgf("entering startDownload()")
+
+	start := time.Now()
 
 	timeoutTimer := time.NewTimer(90 * time.Second)
 	refreshTimer := time.NewTimer(90 * time.Second)
@@ -1127,6 +1131,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadChan:
 			log.Trace().Msgf("downloadChan: %v", newDownload)
+			log.Debug().Msgf("download started in %d ms", time.Since(start).Milliseconds())
 			return newDownload, newDownload.progressChan, nil
 		default:
 			time.Sleep(50 * time.Millisecond)
@@ -1252,6 +1257,8 @@ progressLoop:
 // processDownload creates a directory in s.downloadDir with name = imageId and moves the downloaded files into that directory
 func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, isOriginal, hasOriginal bool, imageId string, data PhotoData) error {
 	log.Trace().Msgf("entering processDownload")
+	start := time.Now()
+
 	outDir, err := s.makeOutDir(imageId)
 	if err != nil {
 		return err
@@ -1336,6 +1343,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 		}
 	}
 
+	log.Debug().Msgf("processed downloaded item in %d ms", time.Since(start).Milliseconds())
 	log.Info().Msgf("downloaded file(s) %s with date %v", strings.Join(baseNames, ", "), data.date.Format(time.DateOnly))
 
 	return nil
@@ -1344,6 +1352,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 // downloadAndProcessItem starts a download then sends it to processDownload for processing
 func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger, imageId string, newDownloadChan <-chan NewDownload) error {
 	log.Trace().Msgf("entering downloadAndProcessItem")
+	start := time.Now()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1374,6 +1383,8 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 	hasOriginalChan := make(chan bool, 1)
 
 	doDownload := func(isOriginal bool) {
+		start := time.Now()
+		log := log.With().Bool("isOriginal", isOriginal).Logger()
 		var hasOriginal bool
 		hasOriginalPtr := &hasOriginal
 		if isOriginal {
@@ -1409,6 +1420,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 					log.Err(err).Msgf("error processing download for %s (try %d/3)", imageId, i+1)
 					continue
 				}
+				log.Debug().Msgf("doDownload done in %d ms", time.Since(start).Milliseconds())
 				break
 			}
 		}
@@ -1458,6 +1470,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			log.Trace().Msgf("downloadAndProcessItem: job result done, %d jobs remaining", jobsRemaining)
 		}
 		if jobsRemaining == 0 {
+			log.Debug().Msgf("downloadAndProcessItem: all jobs completed in %d ms", time.Since(start).Milliseconds())
 			return nil
 		}
 	}
