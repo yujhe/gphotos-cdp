@@ -1055,7 +1055,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 
 				// Click on info button
 				log.Debug().Msgf("date not visible (n=%d), clicking on i button", n)
-				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`document.querySelector('[data-p*="`+imageId+`"] `+getAriaLabelSelector(loc.OpenInfoMatch)+`)?.click()`, nil)); err != nil {
+				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`document.querySelector('[data-p*="`+imageId+`"] `+getAriaLabelSelector(loc.OpenInfoMatch)+`')?.click()`, nil)); err != nil {
 					return fmt.Errorf("could not click on info button due to %w", err)
 				}
 			}
