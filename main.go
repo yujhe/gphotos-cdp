@@ -422,9 +422,6 @@ func (s *Session) login(ctx context.Context) error {
 			timeout := time.Now().Add(2 * time.Minute)
 			var location string
 			for {
-				if time.Now().After(timeout) {
-					return errors.New("timeout waiting for authentication")
-				}
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
@@ -434,6 +431,9 @@ func (s *Session) login(ctx context.Context) error {
 				if *headlessFlag {
 					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 					return errors.New("authentication not possible in -headless mode, see error.png (URL=" + location + ")")
+				}
+				if time.Now().After(timeout) {
+					return errors.New("timeout waiting for authentication")
 				}
 				log.Debug().Msgf("not yet authenticated, at: %v", location)
 				time.Sleep(tick)
@@ -988,7 +988,7 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 // if it is not already open. Then we read the date from the
 // aria-label="Date taken: ?????" field.
 func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId string) (PhotoData, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
 	start := time.Now()
@@ -997,8 +997,6 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	var dateStr string
 	var timeStr string
 	var tzStr string
-	timeout1 := time.NewTimer(10 * time.Second)
-	timeout2 := time.NewTimer(120 * time.Second)
 
 	var n = 0
 	log.Debug().Msg("extracting photo data")
@@ -1021,23 +1019,16 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				return errStillProcessing
 			}
 
-			if n > 1 {
-				select {
-				case <-timeout1.C:
-					log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
-					if err := s.navigateToPhoto(ctx, imageId); err != nil {
-						log.Error().Msgf("getPhotoData: %s", err.Error())
-						timeout1 = time.NewTimer(2 * time.Second)
-					} else {
-						timeout1 = time.NewTimer(10 * time.Second)
-					}
-				default:
+			if n%4 == 0 {
+				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
+				if err := s.navigateToPhoto(ctx, imageId); err != nil {
+					log.Error().Msgf("getPhotoData: %s", err.Error())
 				}
 			}
 
 			wait := 1 * time.Millisecond
 			if n > 1 {
-				wait = time.Duration(300+n*50) * time.Millisecond
+				wait = time.Duration(200+n*30) * time.Millisecond
 			}
 
 			if err := chromedp.Run(ctx,
@@ -1067,10 +1058,8 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 			break
 		}
 
-		select {
-		case <-timeout2.C:
-			return PhotoData{}, fmt.Errorf("timeout waiting for photo info")
-		case <-time.After(10 * time.Millisecond):
+		if time.Since(start).Seconds() > 200 {
+			return PhotoData{}, fmt.Errorf("timeout waiting for photo info (waited %d ms)", time.Since(start).Milliseconds())
 		}
 
 		log.Trace().Msgf("done extracting photo data (n=%d)", n)
@@ -1955,9 +1944,9 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 			chromedp.ActionFunc(
 				func(ctx context.Context) error {
 					if expectedLocation != "" && location != expectedLocation {
-						log.Error().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
+						log.Warn().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
 					} else if expectedLocation == "" && location == previousLocation {
-						log.Error().Msgf("after nav to right, got same location %s", location)
+						log.Warn().Msgf("after nav to right, got same location %s", location)
 					} else {
 						atExpectedUrl = true
 					}
