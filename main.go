@@ -1124,7 +1124,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 }
 
 func (*Session) checkForStillProcessing(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 8000*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 4000*time.Millisecond)
 	defer cancel()
 	log.Trace().Msgf("checking for still processing dialog")
 
