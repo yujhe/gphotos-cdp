@@ -1010,15 +1010,6 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 
-			// If video is 'still processing', photo data may never load, so stop here
-			var undownloadable bool
-			if err := chromedp.Run(ctx, chromedp.Evaluate(`[...document.querySelectorAll('c-wiz[data-media-key*="'+document.location.href.trim().split('/').pop()+'"]')].filter(x => getComputedStyle(x).visibility != 'hidden')[0]?.textContent.indexOf('Your video will be ready soon') >= 0`, &undownloadable)); err != nil {
-				return fmt.Errorf("while checking if video is still processing %w", err)
-			}
-			if undownloadable {
-				return errStillProcessing
-			}
-
 			if n%4 == 0 {
 				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
 				if err := s.navigateToPhoto(ctx, imageId); err != nil {
