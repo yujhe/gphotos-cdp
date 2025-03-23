@@ -244,7 +244,8 @@ type Session struct {
 	profileDir       string // user data session dir. automatically created on chrome startup.
 	startNodeParent  *cdp.Node
 	globalErrChan    chan error
-	photoRelPath     string
+	userPath         string
+	albumPath        string
 	existingItems    sync.Map
 	foundItems       sync.Map
 	downloadedItems  sync.Map
@@ -253,20 +254,31 @@ type Session struct {
 }
 
 func NewSession() (*Session, error) {
-	photoRelPath := ""
+	albumPath := ""
+	userPath := ""
 	if *albumIdFlag != "" {
 		i := strings.LastIndex(*albumIdFlag, "/")
 		if i != -1 {
 			if *albumTypeFlag != "album" {
 				log.Warn().Msgf("-albumtype argument is ignored because it looks like given album ID already contains a type: %v", *albumIdFlag)
 			}
-			photoRelPath = "/" + *albumIdFlag
-			*albumIdFlag = photoRelPath[i+1:]
+			albumPath = "/" + *albumIdFlag
+			*albumIdFlag = albumPath[i+1:]
 		} else {
-			photoRelPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
+			albumPath = "/" + *albumTypeFlag + "/" + *albumIdFlag
 		}
 	}
-	log.Info().Msgf("syncing files at root dir %s%s", gphotosUrl, photoRelPath)
+	if strings.HasPrefix(albumPath, "/u/") {
+		a := strings.Index(albumPath[3:], "/")
+		if a == -1 {
+			userPath = albumPath
+			albumPath = ""
+		} else {
+			userPath = albumPath[:a+3]
+			albumPath = albumPath[a+3:]
+		}
+	}
+	log.Info().Msgf("syncing files at root dir %s%s%s", gphotosUrl, userPath, albumPath)
 	var dir string
 	if *devFlag {
 		dir = filepath.Join(os.TempDir(), "gphotos-cdp")
@@ -308,7 +320,8 @@ func NewSession() (*Session, error) {
 		downloadDir:     downloadDir,
 		downloadDirTmp:  downloadDirTmp,
 		globalErrChan:   make(chan error, 1),
-		photoRelPath:    photoRelPath,
+		userPath:        userPath,
+		albumPath:       albumPath,
 		newDownloadChan: make(chan NewDownload),
 	}
 
@@ -408,12 +421,12 @@ func (s *Session) cleanDownloadDir() error {
 	return nil
 }
 
-// login navigates to https://photos.google.com/ and waits for the user to have
+// login navigates to https://photos.google.com/login and waits for the user to have
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	log.Info().Msg("starting authentication...")
 	return chromedp.Run(ctx,
-		chromedp.Navigate(gphotosUrl),
+		chromedp.Navigate("https://photos.google.com/login"),
 		// when we're not authenticated, the URL is actually
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
 		// authenticated.
@@ -514,17 +527,15 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		return err
 	}
 
-	if s.photoRelPath != "" {
-		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(gphotosUrl+s.photoRelPath))
-		if err != nil {
-			return err
-		}
-		code := resp.Status
-		if code != http.StatusOK {
-			return fmt.Errorf("unexpected %d code when restarting to %s%s", code, gphotosUrl, s.photoRelPath)
-		}
-		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath))
+	if err != nil {
+		return err
 	}
+	code := resp.Status
+	if code != http.StatusOK {
+		return fmt.Errorf("unexpected %d code when restarting to %s%s%s", code, gphotosUrl, s.userPath, s.albumPath)
+	}
+	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
 	if *toFlag != "" {
 		t, err := time.Parse("2006-01-02", *toFlag)
@@ -1597,7 +1608,7 @@ func (s *Session) resync(ctx context.Context) error {
 	retries := 0       // number of subsequent failed attempts to find new items to download
 	sliderPos := 0.0
 	estimatedRemaining := 1000
-	photoNodeSelector := getPhotoNodeSelector(s.photoRelPath)
+	photoNodeSelector := s.getPhotoNodeSelector()
 
 	log.Trace().Msgf("finding start node")
 	opts := []chromedp.QueryOption{chromedp.ByQuery, chromedp.AtLeast(0)}
@@ -1863,7 +1874,7 @@ func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) 
 }
 
 func (s *Session) getPhotoUrl(imageId string) string {
-	return gphotosUrl + s.photoRelPath + "/photo/" + imageId
+	return gphotosUrl + s.userPath + s.albumPath + "/photo/" + imageId
 }
 
 func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error, downloadChan <-chan NewDownload) string {
@@ -2171,17 +2182,8 @@ func (s *Session) dirHasFiles(imageId string) (bool, error) {
 	return false, nil
 }
 
-func getPhotoNodeSelector(nodeHrefPrefix string) string {
-	if strings.HasPrefix(nodeHrefPrefix, "/u/") {
-		nodeHrefPrefix = nodeHrefPrefix[3:]
-		a := strings.Index(nodeHrefPrefix, "/")
-		if a == -1 {
-			nodeHrefPrefix = ""
-		} else {
-			nodeHrefPrefix = nodeHrefPrefix[a:]
-		}
-	}
-	return fmt.Sprintf(`a[href^=".%s/photo/"]`, nodeHrefPrefix)
+func (s *Session) getPhotoNodeSelector() string {
+	return fmt.Sprintf(`a[href^=".%s/photo/"]`, s.albumPath)
 }
 
 // compiled year regex
