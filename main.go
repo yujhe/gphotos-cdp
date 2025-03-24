@@ -441,6 +441,16 @@ func (s *Session) login(ctx context.Context) error {
 				if strings.HasPrefix(location, gphotosUrl) {
 					return nil
 				}
+				if strings.Contains(location, "signinchooser") {
+					userIndex := 0
+					if s.userPath != "" {
+						userIndex, _ = strconv.Atoi(s.userPath[2:])
+					}
+					if err := chromedp.Evaluate(`document.querySelector('[data-authuser][data-item-index="`+strconv.Itoa(userIndex)+`"]')?.click()`, nil).Do(ctx); err != nil {
+						return err
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
 				if *headlessFlag {
 					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 					return errors.New("authentication not possible in -headless mode, see error.png (URL=" + location + ")")
