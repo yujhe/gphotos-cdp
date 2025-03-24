@@ -811,10 +811,6 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownload1(ctx context.Context, log zerolog.Logger) error {
-	log.Trace().Msgf("acquiring lock to request download (method 1)")
-	// muTabActivity.Lock()
-	// defer muTabActivity.Unlock()
-
 	log.Debug().Msgf("requesting download (method 1)")
 	target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
@@ -875,15 +871,12 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 		i++
 		err := func() error {
 			log.Trace().Msgf("acquiring lock to request download (method 2) i=%d", i)
-			// muTabActivity.Lock()
-			// defer muTabActivity.Unlock()
 			log.Trace().Msgf("requesting download (method 2) i=%d", i)
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
 			err := chromedp.Run(ctxTimeout,
-				target.ActivateTarget(chromedp.FromContext(ctxTimeout).Target.TargetID),
 				chromedp.ActionFunc(func(ctx context.Context) error {
 					// Wait for more options menu to appear
 					if !foundDownloadButton {
@@ -1014,12 +1007,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	for {
 		n++
 		if err := func() error {
-			log.Trace().Msgf("acquiring lock to extract photo data (n=%d)", n)
-			muTabActivity.Lock()
-			defer muTabActivity.Unlock()
 			log.Trace().Msgf("extracting photo data (n=%d)", n)
-
-			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 
 			// If video is 'still processing', photo data may never load, so stop here
 			var undownloadable bool
@@ -1037,13 +1025,10 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				}
 			}
 
-			wait := 1 * time.Millisecond
-			if n > 1 {
-				wait = time.Duration(200+n*30) * time.Millisecond
-			}
+			captureScreenshot(ctx, s.downloadDir+"/getphotodata/"+imageId+"_"+strconv.Itoa(n))
 
 			if err := chromedp.Run(ctx,
-				chromedp.Sleep(wait),
+				chromedp.Sleep(time.Duration((math.Pow(1.5, float64(n-1))-1)*50)*time.Millisecond),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.FileNameLabel), imageId), &filename),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel), imageId), &dateStr),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TimeLabel), imageId), &timeStr),
@@ -1066,6 +1051,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		}(); err != nil {
 			return PhotoData{}, err
 		} else if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
+			log.Trace().Msgf("done finding photo data nodes (n=%d)", n)
 			break
 		}
 
@@ -1073,7 +1059,10 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 			return PhotoData{}, fmt.Errorf("timeout waiting for photo info (waited %d ms)", time.Since(start).Milliseconds())
 		}
 
-		log.Trace().Msgf("done extracting photo data (n=%d)", n)
+		// Do part of the waiting outside of the tab lock, so we don't hog the active tab the whole time
+		time.Sleep(time.Duration(n*500) * time.Millisecond)
+
+		log.Trace().Msgf("failed attempt to find photo data nodes (n=%d)", n)
 	}
 
 	log.Trace().Msgf("parsing date: %v and time: %v", dateStr, timeStr)
@@ -1498,8 +1487,6 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("unzipped %v in %v ms", zipfile, time.Since(st).Milliseconds())
 	return files, nil
 }
-
-var muTabActivity sync.Mutex = sync.Mutex{}
 
 type ContextLocks = struct {
 	muNavWaiting             sync.RWMutex
