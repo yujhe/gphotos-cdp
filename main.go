@@ -43,7 +43,6 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/cdproto/css"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
@@ -929,25 +928,10 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 						*hasOriginal = len(downloadOriginalNodes) > 0
 					}
 
-					n := 0
-					for {
-						n++
-						if n > 20 {
-							return errCouldNotPressDownloadButton
-						}
-						var style []*css.ComputedStyleProperty
-						if err := chromedp.ComputedStyle(downloadSelector, &style).Do(ctx); err != nil {
-							return err
-						}
-
-						for _, s := range style {
-							if s.Name == "background-color" && !strings.Contains(s.Value, "0, 0, 0") {
-								return nil
-							}
-						}
-						chromedp.KeyEventNode(nodes[0], kb.ArrowDown).Do(ctx)
-						time.Sleep(2 * time.Millisecond)
+					if err := chromedp.Click(downloadSelector, chromedp.ByQuery).Do(ctx); err != nil {
+						return fmt.Errorf("%w due to %w", errCouldNotPressDownloadButton, err)
 					}
+					return nil
 				}),
 
 				// Activate the selected action and wait a bit before continuing
@@ -964,7 +948,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 			return ctx.Err()
 		} else if i >= 3 {
 			log.Debug().Msgf("trying to request download with method 2 %d times, giving up now", i)
-			break
+			return fmt.Errorf("failed to request download with method 2 after %d tries, %w", i, errCouldNotPressDownloadButton)
 		} else if errors.Is(err, errCouldNotPressDownloadButton) || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
 			log.Debug().Msgf("trying to request download with method 2 again after error: %v", err)
 		} else {
