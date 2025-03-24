@@ -1038,7 +1038,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 			}
 
 			if err := chromedp.Run(ctx,
-				chromedp.Sleep(time.Duration((math.Pow(1.5, float64(n-1))-1)*50)*time.Millisecond),
+				chromedp.Sleep(time.Duration(min(4000, (math.Pow(1.5, float64(n-1))-1)*50))*time.Millisecond),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.FileNameLabel), imageId), &filename),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel), imageId), &dateStr),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TimeLabel), imageId), &timeStr),
