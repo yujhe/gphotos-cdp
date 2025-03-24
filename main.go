@@ -824,6 +824,7 @@ func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 	log.Trace().Msgf("acquiring lock to request download (method 1)")
 	muTabActivity.Lock()
 	defer muTabActivity.Unlock()
+	start := time.Now()
 
 	log.Debug().Msgf("requesting download (method 1)")
 	target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
@@ -831,7 +832,7 @@ func requestDownload1(ctx context.Context, log zerolog.Logger) error {
 		return err
 	}
 	time.Sleep(50 * time.Millisecond)
-	log.Trace().Msgf("done requesting download (method 1)")
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done requesting download (method 1)")
 	return nil
 }
 
@@ -883,10 +884,16 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 	i := 0
 	for {
 		i++
+		var start time.Time
+		defer func() {
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt %d to request download (method 2)", i)
+		}()
+
 		err := func() error {
 			log.Trace().Msgf("acquiring lock to request download (method 2) i=%d", i)
 			// muTabActivity.Lock()
 			// defer muTabActivity.Unlock()
+			start = time.Now()
 			log.Trace().Msgf("requesting download (method 2) i=%d", i)
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1027,6 +1034,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 			log.Trace().Msgf("acquiring lock to extract photo data (n=%d)", n)
 			muTabActivity.Lock()
 			defer muTabActivity.Unlock()
+			start := time.Now()
 			log.Trace().Msgf("extracting photo data (n=%d)", n)
 
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
@@ -1047,8 +1055,12 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				}
 			}
 
+			if n > 8 && log.GetLevel() <= zerolog.DebugLevel {
+				captureScreenshot(ctx, s.downloadDir+"/debug_getPhotoData_"+imageId+"_"+strconv.Itoa(n))
+			}
+
 			if err := chromedp.Run(ctx,
-				chromedp.Sleep(time.Duration(min(4000, (math.Pow(1.5, float64(n-1))-1)*50))*time.Millisecond),
+				chromedp.Sleep(time.Duration(min(2000, (math.Pow(1.5, float64(n-1))-1)*50))*time.Millisecond),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.FileNameLabel), imageId), &filename),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel), imageId), &dateStr),
 				chromedp.Evaluate(getContentOfFirstVisibleNodeScript(getAriaLabelSelector(loc.DateLabel)+" + div "+getAriaLabelSelector(loc.TimeLabel), imageId), &timeStr),
@@ -1067,6 +1079,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				}
 			}
 
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt %d to find photo data nodes", n)
 			return nil
 		}(); err != nil {
 			return PhotoData{}, err
