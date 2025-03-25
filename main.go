@@ -1546,7 +1546,7 @@ func listenNavEvents(ctx context.Context) {
 }
 
 func getSliderPosAndText(ctx context.Context) (float64, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10000*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 30000*time.Millisecond)
 	defer cancel()
 
 	var sliderPos float64
