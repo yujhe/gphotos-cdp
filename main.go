@@ -1284,18 +1284,8 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
 			filename := norm.NFC.String(filepath.Base(f))
 			baseNames = append(baseNames, filename)
-			if foundExpectedFile {
-				continue
-			}
-			if strings.EqualFold(filename, data.filename) || strings.EqualFold(filename, strings.TrimPrefix(data.filename, ".")) {
-				foundExpectedFile = true
-				continue
-			}
-			basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename)) + "."
-			if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
-				foundExpectedFile = true
-				continue
-			}
+
+			foundExpectedFile = foundExpectedFile || compareMangled(data.filename, filename)
 		}
 		if !foundExpectedFile {
 			return fmt.Errorf("expected file %s not found in downloaded zip (found %s) for %s (%w)", data.filename, strings.Join(baseNames, ", "), imageId, errUnexpectedDownload)
@@ -1310,17 +1300,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 
 		if isOriginal || !hasOriginal {
 			// Error if filename is not the expected filename
-			foundExpectedFile := strings.EqualFold(filename, data.filename) || strings.EqualFold(filename, strings.TrimPrefix(data.filename, "."))
-
-			if !foundExpectedFile {
-				// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
-				basenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename))
-				if len(data.filename) >= len(basenameNoExt) && strings.EqualFold(basenameNoExt, data.filename[:len(basenameNoExt)]) {
-					foundExpectedFile = true
-				}
-			}
-
-			if !foundExpectedFile {
+			if !compareMangled(data.filename, filename) {
 				return fmt.Errorf("expected file %s but downloaded file %s for %s (%w)", data.filename, filename, imageId, errUnexpectedDownload)
 			}
 		}
@@ -2271,4 +2251,44 @@ func absInt(x int) int {
 		return -x
 	}
 	return x
+}
+
+// Compare two file names, where s2 is sometimes mangled by gphotos
+// there will be some false positives, this is ok
+func compareMangled(s1, s2 string) bool {
+	sr1 := []rune(s1)
+	sr2 := []rune(s2)
+
+	l1 := len(sr1)
+	for i := range slices.Backward(sr1) {
+		if sr1[i] == '.' {
+			l1 = i + 1
+			break
+		}
+	}
+
+	l2 := len(sr2)
+	for i := range slices.Backward(sr2) {
+		if sr2[i] == '.' {
+			l2 = i + 1
+			break
+		}
+	}
+
+	i1 := 0
+	for i1 < len(sr1) && sr1[i1] == '.' && sr2[i1] != '.' {
+		i1++
+	}
+
+	for i2 := range l2 {
+		if i1 >= len(sr1) {
+			return i2 == l2-1 && sr2[i2] == '.'
+		}
+		if sr1[i1] != sr2[i2] && sr2[i2] != '_' {
+			return false
+		}
+		i1++
+	}
+
+	return i1 >= l1
 }
