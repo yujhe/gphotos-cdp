@@ -1412,7 +1412,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 				log.Trace().Msgf("download failed: %v", err)
 				break
 			} else {
-				err := s.waitForDownload(log, downloadInfo, downloadProgressChan, imageId)
+				err = s.waitForDownload(log, downloadInfo, downloadProgressChan, imageId)
 				if err != nil {
 					break
 				}
