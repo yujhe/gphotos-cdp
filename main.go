@@ -1565,6 +1565,9 @@ func listenNavEvents(ctx context.Context) {
 }
 
 func getSliderPosAndText(ctx context.Context) (float64, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10000*time.Millisecond)
+	defer cancel()
+
 	var sliderPos float64
 	var sliderText string
 
@@ -1708,9 +1711,8 @@ func (s *Session) resync(ctx context.Context) error {
 			}
 			if syncedCount == lastSyncedCount {
 				iterationsWithNoProgressCount++
-				if iterationsWithNoProgressCount > 10 {
-					s.globalErrChan <- fmt.Errorf("no new items processed for 20 minutes, stopping sync")
-					return
+				if iterationsWithNoProgressCount > 20 {
+					panic("no new items processed for 20 minutes, stopping sync")
 				}
 			} else {
 				iterationsWithNoProgressCount = 0
@@ -1725,14 +1727,14 @@ syncAllLoop:
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 			if retries != 0 {
 				log.Debug().Msgf("we seem to be stuck, manually scrolling might help")
-				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 2000*time.Millisecond); err != nil {
-					log.Err(err).Msgf("error scrolling page down manually, %v", err)
+				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 1000*time.Millisecond); err != nil {
+					log.Warn().Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
 				time.Sleep(200 * time.Millisecond)
 			}
 		}
 
-		if retries > 0 && retries%25 == 0 {
+		if retries > 0 && retries%10 == 0 {
 			// loading slow, let's give it some extra time
 			time.Sleep(1 * time.Second)
 		}
@@ -1791,7 +1793,7 @@ syncAllLoop:
 				retries++
 				continue
 			}
-			log.Debug().Msgf("%d nodes on page, processing %d that haven't been processed yet", foundNodes, len(nodes))
+			log.Trace().Msgf("%d nodes on page, processing %d that haven't been processed yet", foundNodes, len(nodes))
 			if foundNodes == len(nodes) {
 				log.Warn().Msg("only new nodes found, expected an overlap")
 			}
