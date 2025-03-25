@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/evilsocket/islazy/zip"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
@@ -1091,7 +1092,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 
 	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("found date '%v' and original filename '%v'", dt, filename)
 
-	return PhotoData{dt, filename}, nil
+	return PhotoData{dt, norm.NFC.String(filename)}, nil
 }
 
 // startDownload starts the download of the currently viewed item. It returns
@@ -1281,7 +1282,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 		foundExpectedFile := false
 		for _, f := range filePaths {
 			// Google converts files to jpg and gif sometimes, we won't raise an error for those cases
-			filename := filepath.Base(f)
+			filename := norm.NFC.String(filepath.Base(f))
 			baseNames = append(baseNames, filename)
 			if foundExpectedFile {
 				continue
@@ -1302,7 +1303,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 	} else {
 		var filename string
 		if downloadInfo.suggestedFilename != "download" && downloadInfo.suggestedFilename != "" {
-			filename = downloadInfo.suggestedFilename
+			filename = norm.NFC.String(downloadInfo.suggestedFilename)
 		} else {
 			filename = data.filename
 		}
