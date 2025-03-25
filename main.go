@@ -814,25 +814,25 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 	cl.muNavWaiting.Lock()
 	cl.navWaiting = false
 	cl.muNavWaiting.Unlock()
-	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("navigation took %d ms", time.Since(st).Milliseconds())
+	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("navigation done")
 	return nil
 }
 
 // requestDownload1 sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownload1(ctx context.Context, log zerolog.Logger) error {
-	log.Trace().Msgf("acquiring lock to request download (method 1)")
-	muTabActivity.Lock()
-	defer muTabActivity.Unlock()
+	log.Trace().Msgf("acquiring lock to request download (backup method)")
+	unlock := getTabLock()
+	defer unlock()
 	start := time.Now()
 
-	log.Debug().Msgf("requesting download (method 1)")
+	log.Debug().Msgf("requesting download (backup method)")
 	target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 	if err := pressButton(ctx, "D", input.ModifierShift); err != nil {
 		return err
 	}
 	time.Sleep(50 * time.Millisecond)
-	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done requesting download (method 1)")
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done requesting download (backup method)")
 	return nil
 }
 
@@ -869,7 +869,7 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 // requestDownload2 clicks the icons to start the download of the currently
 // viewed item.
 func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, original bool, hasOriginal *bool) error {
-	log.Debug().Msgf("requesting download (method 2)")
+	log.Debug().Msgf("requesting download")
 	originalSelector := getAriaLabelSelector(loc.DownloadOriginalLabel)
 	var downloadSelector string
 	if original {
@@ -884,17 +884,18 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 	i := 0
 	for {
 		i++
+		log := log.With().Int("attempt", i).Logger()
 		var start time.Time
 		defer func() {
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt %d to request download (method 2)", i)
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt request download")
 		}()
 
 		err := func() error {
-			log.Trace().Msgf("acquiring lock to request download (method 2) i=%d", i)
-			// muTabActivity.Lock()
-			// defer muTabActivity.Unlock()
+			log.Trace().Msgf("acquiring lock to request download")
+			// unlock := getTabLock()
+			// defer unlock()
 			start = time.Now()
-			log.Trace().Msgf("requesting download (method 2) i=%d", i)
+			log.Trace().Msgf("requesting download")
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
@@ -938,22 +939,22 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 				// Activate the selected action and wait a bit before continuing
 				chromedp.KeyEvent(kb.Enter),
 			)
-			log.Trace().Msgf("done attempting to request download (method 2) i=%d", i)
+			log.Trace().Msgf("done attempting to request download")
 			return err
 		}()
 
 		if err == nil {
-			log.Debug().Msgf("download request succeeded in %d tries", i)
+			log.Debug().Int("triesToSuccess", i).Msgf("download request succeeded")
 			break
 		} else if ctx.Err() != nil {
 			return ctx.Err()
 		} else if i >= 3 {
-			log.Debug().Msgf("trying to request download with method 2 %d times, giving up now", i)
-			return fmt.Errorf("failed to request download with method 2 after %d tries, %w", i, errCouldNotPressDownloadButton)
+			log.Debug().Msgf("tried to request download %d times, giving up now", i)
+			return fmt.Errorf("failed to request download after %d tries, %w", i, errCouldNotPressDownloadButton)
 		} else if errors.Is(err, errCouldNotPressDownloadButton) || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
-			log.Debug().Msgf("trying to request download with method 2 again after error: %v", err)
+			log.Debug().Msgf("trying to request download again after error: %v", err)
 		} else {
-			return fmt.Errorf("encountered error '%s' when requesting download with method 2", err.Error())
+			return fmt.Errorf("encountered error '%s' when requesting download", err.Error())
 		}
 
 		time.Sleep(1 * time.Millisecond)
@@ -996,6 +997,13 @@ func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
 	return nil
 }
 
+func getTabLock() func() {
+	start := time.Now()
+	muTabActivity.Lock()
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("acquired tab lock")
+	return muTabActivity.Unlock
+}
+
 // getPhotoData gets the date from the currently viewed item.
 // First we open the info panel by clicking on the "i" icon (aria-label="Open info")
 // if it is not already open. Then we read the date from the
@@ -1015,12 +1023,13 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	log.Debug().Msg("extracting photo data")
 	for {
 		n++
+		log := log.With().Int("attempt", n).Logger()
 		if err := func() error {
-			log.Trace().Msgf("acquiring lock to extract photo data (n=%d)", n)
-			muTabActivity.Lock()
-			defer muTabActivity.Unlock()
+			log.Trace().Msgf("acquiring lock to extract photo data")
+			unlock := getTabLock()
+			defer unlock()
 			start := time.Now()
-			log.Trace().Msgf("extracting photo data (n=%d)", n)
+			log.Trace().Msgf("extracting photo data")
 
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 
@@ -1058,18 +1067,18 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				log.Trace().Msgf("incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v", dateStr, timeStr, tzStr, filename)
 
 				// Click on info button
-				log.Debug().Msgf("date not visible (n=%d), clicking on i button", n)
+				log.Debug().Msgf("date not visible, clicking on i button")
 				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`document.querySelector('[data-p*="`+imageId+`"] `+getAriaLabelSelector(loc.OpenInfoMatch)+`')?.click()`, nil)); err != nil {
 					return fmt.Errorf("could not click on info button due to %w", err)
 				}
 			}
 
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt %d to find photo data nodes", n)
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt to find photo data nodes")
 			return nil
 		}(); err != nil {
 			return PhotoData{}, err
 		} else if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
-			log.Trace().Msgf("done finding photo data nodes (n=%d)", n)
+			log.Trace().Int("triesToSuccess", n).Msgf("done finding photo data nodes")
 			break
 		}
 
@@ -1080,7 +1089,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		// Do part of the waiting outside of the tab lock, so we don't hog the active tab the whole time
 		time.Sleep(time.Duration(n*500) * time.Millisecond)
 
-		log.Trace().Msgf("failed attempt to find photo data nodes (n=%d)", n)
+		log.Trace().Msgf("failed attempt to find photo data nodes")
 	}
 
 	log.Trace().Msgf("parsing date: %v and time: %v", dateStr, timeStr)
@@ -1090,7 +1099,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		return PhotoData{}, fmt.Errorf("parsing date, %w", err)
 	}
 
-	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("found date '%v' and original filename '%v'", dt, filename)
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("found date and original filename: '%v', '%v'", dt, filename)
 
 	return PhotoData{dt, norm.NFC.String(filename)}, nil
 }
@@ -1138,7 +1147,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadChan:
 			log.Trace().Msgf("downloadChan: %v", newDownload)
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("download started in %d ms", time.Since(start).Milliseconds())
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("download started")
 			return newDownload, newDownload.progressChan, nil
 		default:
 			time.Sleep(50 * time.Millisecond)
@@ -1330,7 +1339,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 		}
 	}
 
-	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("processed downloaded item in %d ms", time.Since(start).Milliseconds())
+	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("processed downloaded item")
 	log.Info().Msgf("downloaded file(s) %s with date %v", strings.Join(baseNames, ", "), data.date.Format(time.DateOnly))
 
 	return nil
@@ -1407,7 +1416,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 					log.Err(err).Msgf("error processing download for %s (try %d/3)", imageId, i+1)
 					continue
 				}
-				log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("doDownload done in %d ms", time.Since(start).Milliseconds())
+				log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("doDownload done")
 				break
 			}
 		}
@@ -1457,7 +1466,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			log.Trace().Msgf("downloadAndProcessItem: job result done, %d jobs remaining", jobsRemaining)
 		}
 		if jobsRemaining == 0 {
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("downloadAndProcessItem: all jobs completed in %d ms", time.Since(start).Milliseconds())
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("downloadAndProcessItem successfully completed")
 			return nil
 		}
 	}
@@ -1482,7 +1491,7 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 		return []string{""}, err
 	}
 
-	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("unzipped %v in %v ms", zipfile, time.Since(st).Milliseconds())
+	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("done unzipping downloaded zip file: %s", zipfile)
 	return files, nil
 }
 
