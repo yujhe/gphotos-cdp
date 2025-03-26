@@ -515,7 +515,7 @@ func captureScreenshot(ctx context.Context, filePath string) {
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
 	if s.userPath+s.albumPath != "" {
-		if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond); err != nil {
+		if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond, 5); err != nil {
 			return err
 		}
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
@@ -899,14 +899,14 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 
 // navigateToPhoto navigates to the photo page for the given image ID.
 func (s *Session) navigateToPhoto(ctx context.Context, log zerolog.Logger, imageId string) error {
-	return s.navigateWithAction(ctx, log, chromedp.Navigate(s.getPhotoUrl(imageId)), "to item "+imageId, 10000*time.Millisecond)
+	return s.navigateWithAction(ctx, log, chromedp.Navigate(s.getPhotoUrl(imageId)), "to item "+imageId, 10000*time.Millisecond, 5)
 }
 
-func (s *Session) navigateWithAction(ctx context.Context, log zerolog.Logger, action chromedp.Action, desc string, timeout time.Duration) error {
+func (s *Session) navigateWithAction(ctx context.Context, log zerolog.Logger, action chromedp.Action, desc string, timeout time.Duration, retries int) error {
 	log.Trace().Msgf("navigating %s", desc)
 	var resp *network.Response
 	var err error
-	for range 5 {
+	for range retries {
 		func() {
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -1903,7 +1903,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 // navRight navigates to the next item to the right
 func (s *Session) navRight(log zerolog.Logger) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		return s.navigateWithAction(ctx, log, chromedp.KeyEvent(kb.ArrowRight), "right", 200*time.Millisecond)
+		return s.navigateWithAction(ctx, log, chromedp.KeyEvent(kb.ArrowRight), "right", 500*time.Millisecond, 1)
 	}
 }
 
