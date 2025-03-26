@@ -109,7 +109,7 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 	if !*jsonLogFlag {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.TimeOnly})
 	}
 	if (!*devFlag && *profileFlag == "") && *headlessFlag {
 		log.Fatal().Msg("-headless only allowed in dev mode or if -profile dir is set")
@@ -514,15 +514,17 @@ func captureScreenshot(ctx context.Context, filePath string) {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) (err error) {
+	if s.userPath+s.albumPath != "" {
+		if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond); err != nil {
+			return err
+		}
+		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+	}
+
 	// This is only used to ensure page is loaded
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
 	}
-
-	if err := s.navigateWithAction(ctx, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start"); err != nil {
-		return err
-	}
-	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
 	if *toFlag != "" {
 		t, err := time.Parse("2006-01-02", *toFlag)
@@ -896,17 +898,17 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 }
 
 // navigateToPhoto navigates to the photo page for the given image ID.
-func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
-	return s.navigateWithAction(ctx, chromedp.Navigate(s.getPhotoUrl(imageId)), "to item "+imageId)
+func (s *Session) navigateToPhoto(ctx context.Context, log zerolog.Logger, imageId string) error {
+	return s.navigateWithAction(ctx, log, chromedp.Navigate(s.getPhotoUrl(imageId)), "to item "+imageId, 10000*time.Millisecond)
 }
 
-func (s *Session) navigateWithAction(ctx context.Context, action chromedp.Action, desc string) error {
+func (s *Session) navigateWithAction(ctx context.Context, log zerolog.Logger, action chromedp.Action, desc string, timeout time.Duration) error {
 	log.Trace().Msgf("navigating %s", desc)
 	var resp *network.Response
 	var err error
 	for range 5 {
 		func() {
-			ctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
+			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID)
 			resp, err = chromedp.RunResponse(ctx, action)
@@ -994,7 +996,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 
 			if n%5 == 0 {
 				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load")
-				if err := s.navigateToPhoto(ctx, imageId); err != nil {
+				if err := s.navigateToPhoto(ctx, log, imageId); err != nil {
 					log.Error().Msgf("getPhotoData: %s", err.Error())
 				}
 			}
@@ -1086,7 +1088,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			}
 		case <-refreshTimer.C:
 			log.Debug().Msgf("reloading page because download failed to start")
-			if err := s.navigateToPhoto(ctx, imageId); err != nil {
+			if err := s.navigateToPhoto(ctx, log, imageId); err != nil {
 				log.Error().Msgf("startDownload: %s", err.Error())
 				refreshTimer = time.NewTimer(1 * time.Second)
 			} else {
@@ -1825,7 +1827,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
 		err := chromedp.Run(ctx,
-			chromedp.ActionFunc(s.navRight),
+			chromedp.ActionFunc(s.navRight(log)),
 			chromedp.Sleep(10*time.Millisecond),
 			chromedp.Location(&location),
 			chromedp.ActionFunc(
@@ -1853,7 +1855,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 			return "", errAbortBatch
 		}
 		log.Trace().Msgf("navigating to expected location")
-		if err := s.navigateToPhoto(ctx, imageId); err != nil {
+		if err := s.navigateToPhoto(ctx, log, imageId); err != nil {
 			return "", err
 		}
 	}
@@ -1899,8 +1901,10 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 }
 
 // navRight navigates to the next item to the right
-func (s *Session) navRight(ctx context.Context) error {
-	return s.navigateWithAction(ctx, chromedp.KeyEvent(kb.ArrowRight), "right")
+func (s *Session) navRight(log zerolog.Logger) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		return s.navigateWithAction(ctx, log, chromedp.KeyEvent(kb.ArrowRight), "right", 200*time.Millisecond)
+	}
 }
 
 // Check if there are folders in the download dir that were not seen in gphotos
