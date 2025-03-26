@@ -47,7 +47,6 @@ import (
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -220,22 +219,6 @@ type NewDownload struct {
 	progressChan      chan bool
 }
 
-var lastMessageForKey map[string]time.Time = make(map[string]time.Time)
-var muLog sync.Mutex = sync.Mutex{}
-
-func timedLogReady(key string, duration time.Duration) bool {
-	if lastMessageForKey != nil {
-		muLog.Lock()
-		defer muLog.Unlock()
-		t := lastMessageForKey[key]
-		if t.IsZero() || time.Since(t) >= duration {
-			lastMessageForKey[key] = time.Now()
-			return true
-		}
-	}
-	return false
-}
-
 type Session struct {
 	parentContext    context.Context
 	chromeExecCancel context.CancelFunc
@@ -363,7 +346,6 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		chromedp.WithErrorf(s.cdpError),
 	)
 	s.parentContext = ctx
-	ctx = SetContextData(ctx)
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
@@ -376,7 +358,7 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		panic(err)
 	}
 
-	startDownloadListener(ctx, s.newDownloadChan, s.globalErrChan)
+	startDownloadListener(ctx, s.newDownloadChan)
 
 	return ctx, cancel
 }
@@ -537,13 +519,8 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 		return err
 	}
 
-	resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath))
-	if err != nil {
+	if err := s.navigateWithAction(ctx, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start"); err != nil {
 		return err
-	}
-	code := resp.Status
-	if code != http.StatusOK {
-		return fmt.Errorf("unexpected %d code when restarting to %s%s%s", code, gphotosUrl, s.userPath, s.albumPath)
 	}
 	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
@@ -791,38 +768,11 @@ func doRun(filePath string) error {
 	return cmd.Run()
 }
 
-// navLeft navigates to the next item to the left
-func navWithAction(ctx context.Context, action chromedp.Action) error {
-	cl := GetContextData(ctx)
-	st := time.Now()
-	cl.muNavWaiting.Lock()
-	cl.listenEvents = true
-	cl.muNavWaiting.Unlock()
-	action.Do(ctx)
-	cl.muNavWaiting.Lock()
-	cl.navWaiting = true
-	cl.muNavWaiting.Unlock()
-	t := time.NewTimer(2 * time.Minute)
-	select {
-	case <-cl.navDone:
-		if !t.Stop() {
-			<-t.C
-		}
-	case <-t.C:
-		return errors.New("timeout waiting for navigation")
-	}
-	cl.muNavWaiting.Lock()
-	cl.navWaiting = false
-	cl.muNavWaiting.Unlock()
-	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("navigation done")
-	return nil
-}
-
-// requestDownload1 sends the Shift+D event, to start the download of the currently
+// requestDownloadBackup sends the Shift+D event, to start the download of the currently
 // viewed item.
-func requestDownload1(ctx context.Context, log zerolog.Logger) error {
+func requestDownloadBackup(ctx context.Context, log zerolog.Logger) error {
 	log.Trace().Msgf("acquiring lock to request download (backup method)")
-	unlock := getTabLock()
+	unlock := acquireTabLock()
 	defer unlock()
 	start := time.Now()
 
@@ -866,9 +816,9 @@ func pressButton(ctx context.Context, key string, modifier input.Modifier) error
 	return nil
 }
 
-// requestDownload2 clicks the icons to start the download of the currently
+// requestDownload clicks the icons to start the download of the currently
 // viewed item.
-func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, original bool, hasOriginal *bool) error {
+func requestDownload(ctx context.Context, log zerolog.Logger, original bool, hasOriginal *bool) error {
 	log.Debug().Msgf("requesting download")
 	originalSelector := getAriaLabelSelector(loc.DownloadOriginalLabel)
 	var downloadSelector string
@@ -892,8 +842,8 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 
 		err := func() error {
 			log.Trace().Msgf("acquiring lock to request download")
-			// unlock := getTabLock()
-			// defer unlock()
+			unlock := acquireTabLock()
+			defer unlock()
 			start = time.Now()
 			log.Trace().Msgf("requesting download")
 			// context timeout just in case
@@ -906,42 +856,24 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 					// Wait for more options menu to appear
 					if !foundDownloadButton {
 						// Open more options dialog
-						if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop()?.click()`, nil).Do(ctx); err != nil {
+						if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('button`+moreOptionsSelector+`')].pop()?.click()`, nil).Do(ctx); err != nil {
 							return fmt.Errorf("could not open 'more options' dialog due to %w", err)
 						}
 					}
 					return nil
 				}),
+				chromedp.Sleep(10*time.Millisecond),
 
-				// Press down arrow until the right menu option is selected
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					var nodes []*cdp.Node
-					if err := doActionWithTimeout(ctx, chromedp.Nodes(downloadSelector, &nodes, chromedp.ByQuery), 10000*time.Millisecond); err != nil {
-						return fmt.Errorf("could not find 'download' button due to %w", err)
-					}
-					foundDownloadButton = true
-
-					// Check if there is an original version of the image that can also be downloaded
-					if hasOriginal != nil && !*hasOriginal {
-						var downloadOriginalNodes []*cdp.Node
-						if err := chromedp.Nodes(originalSelector, &downloadOriginalNodes, chromedp.AtLeast(0)).Do(ctx); err != nil {
-							return fmt.Errorf("checking for original version failed due to %w", err)
-						}
-						*hasOriginal = len(downloadOriginalNodes) > 0
-					}
-
-					if err := chromedp.Click(downloadSelector, chromedp.ByQuery).Do(ctx); err != nil {
-						return fmt.Errorf("%w due to %w", errCouldNotPressDownloadButton, err)
-					}
-					return nil
-				}),
-
-				// Activate the selected action and wait a bit before continuing
-				chromedp.KeyEvent(kb.Enter),
+				chromedp.Evaluate(`!!document.querySelector('`+originalSelector+`')`, hasOriginal),
+				chromedp.Evaluate(`document.querySelector('`+downloadSelector+`').click()`, nil),
 			)
 			log.Trace().Msgf("done attempting to request download")
 			return err
 		}()
+
+		if err != nil && strings.Contains(err.Error(), "Cannot read properties of null (reading 'click')") {
+			err = errCouldNotPressDownloadButton
+		}
 
 		if err == nil {
 			log.Debug().Int("triesToSuccess", i).Msgf("download request succeeded")
@@ -951,7 +883,7 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 		} else if i >= 3 {
 			log.Debug().Msgf("tried to request download %d times, giving up now", i)
 			return fmt.Errorf("failed to request download after %d tries, %w", i, errCouldNotPressDownloadButton)
-		} else if errors.Is(err, errCouldNotPressDownloadButton) || err.Error() == "Could not find node with given id (-32000)" || errors.Is(err, context.DeadlineExceeded) {
+		} else if errors.Is(err, errCouldNotPressDownloadButton) {
 			log.Debug().Msgf("trying to request download again after error: %v", err)
 		} else {
 			return fmt.Errorf("encountered error '%s' when requesting download", err.Error())
@@ -965,42 +897,60 @@ func requestDownload2(ctx context.Context, log zerolog.Logger, imageId string, o
 
 // navigateToPhoto navigates to the photo page for the given image ID.
 func (s *Session) navigateToPhoto(ctx context.Context, imageId string) error {
-	url := s.getPhotoUrl(imageId)
-	log.Trace().Msgf("navigating to %v", url)
+	return s.navigateWithAction(ctx, chromedp.Navigate(s.getPhotoUrl(imageId)), "to item "+imageId)
+}
+
+func (s *Session) navigateWithAction(ctx context.Context, action chromedp.Action, desc string) error {
+	log.Trace().Msgf("navigating %s", desc)
 	var resp *network.Response
 	var err error
 	for range 5 {
-		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate(url))
-		if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) || (err == nil && (resp == nil || resp.Status == 504)) {
-			err = errNavigateAborted
+		func() {
+			ctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
+			defer cancel()
+			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID)
+			resp, err = chromedp.RunResponse(ctx, action)
+		}()
+		if (err != nil && strings.Contains(err.Error(), "net::ERR_ABORTED")) ||
+			(err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil) ||
+			(err == nil && (resp != nil && resp.Status == 504)) {
+			err = fmt.Errorf("%w: %w", errNavigateAborted, err)
 		}
 		if errors.Is(err, errNavigateAborted) {
 			// retry
-			log.Error().Msgf("error navigating to %v: %s, will try again", url, err.Error())
+			log.Warn().Msgf("error navigating %s: %s (response %v), will try again", desc, err.Error(), resp)
 			time.Sleep(100 * time.Millisecond)
 		} else {
 			break
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("error navigating to %v: %w", url, err)
+		return fmt.Errorf("error navigating %s: %w", desc, err)
 	}
 	if resp == nil {
-		return fmt.Errorf("unexpected response navigating to item %s: nil", imageId)
+		return nil
 	} else if resp.Status == http.StatusOK {
 		if err := chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery)); err != nil {
 			return fmt.Errorf("error waiting for body: %w", err)
 		}
 	} else {
-		return fmt.Errorf("unexpected response navigating to item %s: %v", imageId, resp.Status)
+		return fmt.Errorf("unexpected response navigating %s: %v", desc, resp.Status)
 	}
 	return nil
 }
 
-func getTabLock() func() {
+var queuedTabLocks atomic.Int64
+
+func acquireTabLock() func() {
 	start := time.Now()
+	queuedTabLocks.Add(1)
 	muTabActivity.Lock()
-	log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("acquired tab lock")
+	queuedTabLocks.Add(-1)
+	dur := time.Since(start)
+	log.Debug().Int64("duration", dur.Milliseconds()).Msgf("acquired tab lock")
+	if dur > 10000*time.Millisecond {
+		log.Warn().Int64("duration", dur.Milliseconds()).Msgf("acquiring tab lock took %d ms (%d in queue), consider reducing worker count", dur.Milliseconds(), queuedTabLocks.Load())
+	}
 	return muTabActivity.Unlock
 }
 
@@ -1026,7 +976,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		log := log.With().Int("attempt", n).Logger()
 		if err := func() error {
 			log.Trace().Msgf("acquiring lock to extract photo data")
-			unlock := getTabLock()
+			unlock := acquireTabLock()
 			defer unlock()
 			start := time.Now()
 			log.Trace().Msgf("extracting photo data")
@@ -1042,15 +992,11 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				return errStillProcessing
 			}
 
-			if n%4 == 0 {
-				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load (n=%d)", n)
+			if n%5 == 0 {
+				log.Debug().Msgf("getPhotoData: reloading page to force photo info to load")
 				if err := s.navigateToPhoto(ctx, imageId); err != nil {
 					log.Error().Msgf("getPhotoData: %s", err.Error())
 				}
-			}
-
-			if n > 8 && log.GetLevel() <= zerolog.DebugLevel {
-				captureScreenshot(ctx, s.downloadDir+"/debug_getPhotoData_"+imageId+"_"+strconv.Itoa(n))
 			}
 
 			if err := chromedp.Run(ctx,
@@ -1063,12 +1009,15 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				return fmt.Errorf("could not extract photo data due to %w", err)
 			}
 
-			if len(dateStr) == 0 && n > 2 {
+			if len(dateStr) == 0 && n >= 2 {
 				log.Trace().Msgf("incomplete data - Date: %v, Time: %v, Timezone: %v, File name: %v", dateStr, timeStr, tzStr, filename)
 
 				// Click on info button
 				log.Debug().Msgf("date not visible, clicking on i button")
-				if err := chromedp.Run(ctx, chromedp.EvaluateAsDevTools(`document.querySelector('[data-p*="`+imageId+`"] `+getAriaLabelSelector(loc.OpenInfoMatch)+`')?.click()`, nil)); err != nil {
+				if err := chromedp.Run(ctx,
+					target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
+					chromedp.Sleep(10*time.Millisecond),
+					chromedp.EvaluateAsDevTools(`document.querySelector('[data-p*="`+imageId+`"] `+getAriaLabelSelector(loc.OpenInfoMatch)+`')?.click()`, nil)); err != nil {
 					return fmt.Errorf("could not click on info button due to %w", err)
 				}
 			}
@@ -1125,11 +1074,11 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 
 		select {
 		case <-requestTimer.C:
-			if err := requestDownload2(ctx, log, imageId, isOriginal, hasOriginal); err != nil {
+			if err := requestDownload(ctx, log, isOriginal, hasOriginal); err != nil {
 				if isOriginal || !errors.Is(err, errCouldNotPressDownloadButton) {
 					return NewDownload{}, nil, err
 				} else if !isOriginal {
-					requestDownload1(ctx, log)
+					requestDownloadBackup(ctx, log)
 				}
 				refreshTimer = time.NewTimer(100 * time.Millisecond)
 			} else {
@@ -1153,9 +1102,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		if timedLogReady("downloadStatus"+imageId, 15*time.Second) {
-			log.Debug().Msgf("checking download start status")
-		}
+		log.Trace().Msgf("checking download start status")
 	}
 }
 
@@ -1174,8 +1121,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		return errStillProcessing
 	}
 
-	log.Trace().Msgf("checking for still processing dialog (1)")
-	// The first check only works for requestDownload2 method (not requestDownload1)
+	// The first check only works for requestDownload method (not backup method)
 	var nodes []*cdp.Node
 	if err := chromedp.Nodes(getAriaLabelSelector(loc.VideoStillProcessingDialogLabel)+` button`, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
 		return err
@@ -1184,16 +1130,12 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 	if isStillProcessing {
 		log.Debug().Msgf("found still processing dialog, need to press button to remove")
 		// Click the button to close the warning, otherwise it will block navigating to the next photo
-		cl := GetContextData(ctx)
-		cl.muKbEvents.Lock()
 		err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
-		cl.muKbEvents.Unlock()
 		if err != nil {
 			return err
 		}
 	} else {
-		log.Trace().Msgf("checking for still processing dialog (2)")
-		// The second check only works for requestDownload1 method (not requestDownload2)
+		// The second check only works for backup method (not requestDownload)
 		if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.VideoStillProcessingStatusText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 			return err
 		}
@@ -1202,7 +1144,6 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 			time.Sleep(5 * time.Second) // Wait for error message to disappear before continuing, otherwise we will also skip next files
 		}
 		if !isStillProcessing {
-			log.Trace().Msgf("checking for still processing dialog (3)")
 			// Sometimes Google returns a different error, check for that too
 			if err := chromedp.Evaluate("document.body?.textContent.indexOf('"+loc.NoWebpageFoundText+"') >= 0", &isStillProcessing).Do(ctx); err != nil {
 				return err
@@ -1213,7 +1154,6 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		log.Warn().Msg("received 'Video is still processing' error")
 		return errStillProcessing
 	}
-	log.Trace().Msgf("checking for still processing dialog (done)")
 	return nil
 }
 
@@ -1497,63 +1437,6 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 
 var muTabActivity sync.Mutex = sync.Mutex{}
 
-type ContextLocks = struct {
-	muNavWaiting             sync.RWMutex
-	muKbEvents               sync.Mutex
-	listenEvents, navWaiting bool
-	navDone                  chan bool
-}
-type ContextLocksPointer = *ContextLocks
-
-// contextKey is a custom type for context keys to avoid collisions
-type contextKey struct {
-	name string
-}
-
-// Define the key for context locks
-var contextLocksKey = &contextKey{name: "contextLocks"}
-
-func GetContextData(ctx context.Context) ContextLocksPointer {
-	return ctx.Value(contextLocksKey).(ContextLocksPointer)
-}
-
-func SetContextData(ctx context.Context) context.Context {
-	return context.WithValue(ctx, contextLocksKey, &ContextLocks{
-		muNavWaiting: sync.RWMutex{},
-		muKbEvents:   sync.Mutex{},
-		listenEvents: false,
-		navWaiting:   false,
-		navDone:      make(chan bool, 1),
-	})
-}
-
-func listenNavEvents(ctx context.Context) {
-	cl := GetContextData(ctx)
-	chromedp.ListenTarget(ctx, func(ev interface{}) {
-		cl.muNavWaiting.RLock()
-		listen := cl.listenEvents
-		cl.muNavWaiting.RUnlock()
-		if !listen {
-			return
-		}
-		switch ev.(type) {
-		case *page.EventNavigatedWithinDocument:
-			go func() {
-				for {
-					cl.muNavWaiting.RLock()
-					waiting := cl.navWaiting
-					cl.muNavWaiting.RUnlock()
-					if waiting {
-						cl.navDone <- true
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-			}()
-		}
-	})
-}
-
 func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30000*time.Millisecond)
 	defer cancel()
@@ -1596,8 +1479,6 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 func (s *Session) resync(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	listenNavEvents(ctx)
 
 	lastNode := &cdp.Node{}
 	var nodes []*cdp.Node
@@ -1822,7 +1703,7 @@ syncAllLoop:
 
 		if len(imageIds) > 0 {
 			log.Debug().Msgf("adding %d items to queue", len(imageIds))
-			job := Job{imageIds, *workersFlag == 1}
+			job := Job{imageIds, false}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
 
@@ -1878,8 +1759,6 @@ func (s *Session) getPhotoUrl(imageId string) string {
 func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error, downloadChan <-chan NewDownload) string {
 	ctx, cancel := chromedp.NewContext(s.parentContext)
 	chromedp.Run(ctx)
-	ctx = SetContextData(ctx)
-	listenNavEvents(ctx)
 
 	log := log.With().Int("workerId", workerId).Logger()
 	go func() {
@@ -1946,8 +1825,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
 		err := chromedp.Run(ctx,
-			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
-			chromedp.ActionFunc(navRight),
+			chromedp.ActionFunc(s.navRight),
 			chromedp.Sleep(10*time.Millisecond),
 			chromedp.Location(&location),
 			chromedp.ActionFunc(
@@ -2021,9 +1899,8 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 }
 
 // navRight navigates to the next item to the right
-func navRight(ctx context.Context) error {
-	log.Debug().Msg("Navigating right")
-	return navWithAction(ctx, chromedp.KeyEvent(kb.ArrowRight))
+func (s *Session) navRight(ctx context.Context) error {
+	return s.navigateWithAction(ctx, chromedp.KeyEvent(kb.ArrowRight), "right")
 }
 
 // Check if there are folders in the download dir that were not seen in gphotos
@@ -2110,7 +1987,7 @@ func setFileDate(filepath string, date time.Time) error {
 	return nil
 }
 
-func startDownloadListener(ctx context.Context, newDownloadChan chan NewDownload, globalErrChan chan error) {
+func startDownloadListener(ctx context.Context, newDownloadChan chan NewDownload) {
 	currentDownloads := make(map[string]chan bool)
 
 	// Listen for new download events
