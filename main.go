@@ -47,6 +47,7 @@ import (
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -346,6 +347,7 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		chromedp.WithErrorf(s.cdpError),
 	)
 	s.parentContext = ctx
+	ctx = SetContextData(ctx)
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
@@ -770,6 +772,32 @@ func doRun(filePath string) error {
 	return cmd.Run()
 }
 
+func navWithAction(ctx context.Context, action chromedp.Action) error {
+	cl := GetContextData(ctx)
+	st := time.Now()
+	cl.muNavWaiting.Lock()
+	cl.listenEvents = true
+	cl.muNavWaiting.Unlock()
+	action.Do(ctx)
+	cl.muNavWaiting.Lock()
+	cl.navWaiting = true
+	cl.muNavWaiting.Unlock()
+	t := time.NewTimer(2 * time.Minute)
+	select {
+	case <-cl.navDone:
+		if !t.Stop() {
+			<-t.C
+		}
+	case <-t.C:
+		return errors.New("timeout waiting for navigation")
+	}
+	cl.muNavWaiting.Lock()
+	cl.navWaiting = false
+	cl.muNavWaiting.Unlock()
+	log.Debug().Int64("duration", time.Since(st).Milliseconds()).Msgf("navigation done")
+	return nil
+}
+
 // requestDownloadBackup sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownloadBackup(ctx context.Context, log zerolog.Logger) error {
@@ -1132,7 +1160,10 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 	if isStillProcessing {
 		log.Debug().Msgf("found still processing dialog, need to press button to remove")
 		// Click the button to close the warning, otherwise it will block navigating to the next photo
+		cl := GetContextData(ctx)
+		cl.muKbEvents.Lock()
 		err := chromedp.MouseClickNode(nodes[0]).Do(ctx)
+		cl.muKbEvents.Unlock()
 		if err != nil {
 			return err
 		}
@@ -1439,6 +1470,63 @@ func (s *Session) handleZip(log zerolog.Logger, zipfile, outFolder string) ([]st
 
 var muTabActivity sync.Mutex = sync.Mutex{}
 
+type ContextLocks = struct {
+	muNavWaiting             sync.RWMutex
+	muKbEvents               sync.Mutex
+	listenEvents, navWaiting bool
+	navDone                  chan bool
+}
+type ContextLocksPointer = *ContextLocks
+
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey struct {
+	name string
+}
+
+// Define the key for context locks
+var contextLocksKey = &contextKey{name: "contextLocks"}
+
+func GetContextData(ctx context.Context) ContextLocksPointer {
+	return ctx.Value(contextLocksKey).(ContextLocksPointer)
+}
+
+func SetContextData(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextLocksKey, &ContextLocks{
+		muNavWaiting: sync.RWMutex{},
+		muKbEvents:   sync.Mutex{},
+		listenEvents: false,
+		navWaiting:   false,
+		navDone:      make(chan bool, 1),
+	})
+}
+
+func listenNavEvents(ctx context.Context) {
+	cl := GetContextData(ctx)
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		cl.muNavWaiting.RLock()
+		listen := cl.listenEvents
+		cl.muNavWaiting.RUnlock()
+		if !listen {
+			return
+		}
+		switch ev.(type) {
+		case *page.EventNavigatedWithinDocument:
+			go func() {
+				for {
+					cl.muNavWaiting.RLock()
+					waiting := cl.navWaiting
+					cl.muNavWaiting.RUnlock()
+					if waiting {
+						cl.navDone <- true
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}()
+		}
+	})
+}
+
 func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30000*time.Millisecond)
 	defer cancel()
@@ -1481,6 +1569,8 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 func (s *Session) resync(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	listenNavEvents(ctx)
 
 	lastNode := &cdp.Node{}
 	var nodes []*cdp.Node
@@ -1761,6 +1851,8 @@ func (s *Session) getPhotoUrl(imageId string) string {
 func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<- string, errChan chan<- error, downloadChan <-chan NewDownload) string {
 	ctx, cancel := chromedp.NewContext(s.parentContext)
 	chromedp.Run(ctx)
+	ctx = SetContextData(ctx)
+	listenNavEvents(ctx)
 
 	log := log.With().Int("workerId", workerId).Logger()
 	go func() {
@@ -1827,6 +1919,7 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		// pressing right arrow to navigate to the next item (batch jobs should be sequential)
 		log.Trace().Msgf("navigating to next item by right arrow press (%s)", expectedLocation)
 		err := chromedp.Run(ctx,
+			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID),
 			chromedp.ActionFunc(s.navRight(log)),
 			chromedp.Sleep(10*time.Millisecond),
 			chromedp.Location(&location),
@@ -1903,7 +1996,8 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 // navRight navigates to the next item to the right
 func (s *Session) navRight(log zerolog.Logger) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		return s.navigateWithAction(ctx, log, chromedp.KeyEvent(kb.ArrowRight), "right", 500*time.Millisecond, 1)
+		log.Debug().Msg("Navigating right")
+		return navWithAction(ctx, chromedp.KeyEvent(kb.ArrowRight))
 	}
 }
 
