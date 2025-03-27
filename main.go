@@ -877,7 +877,7 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 			start = time.Now()
 			log.Trace().Msgf("requesting download")
 			// context timeout just in case
-			ctxTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
+			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
 			err := chromedp.Run(ctxTimeout,
@@ -1527,18 +1527,11 @@ func listenNavEvents(ctx context.Context) {
 	})
 }
 
-func getSliderPosAndText(ctx context.Context) (float64, string, error) {
+func getSliderPos(ctx context.Context) (float64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30000*time.Millisecond)
 	defer cancel()
 
 	var sliderPos float64
-	var sliderText string
-
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(document.querySelector('div[role="slider"][aria-valuemax="1"][aria-valuetext]')?.ariaValueText || '')`, &sliderText),
-	); err != nil {
-		return 0, "", fmt.Errorf("couldn't find slider node, %w", err)
-	}
 
 	var mainSel string
 	if len(*albumIdFlag) > 1 {
@@ -1552,10 +1545,10 @@ func getSliderPosAndText(ctx context.Context) (float64, string, error) {
 		var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
 		return nodes.length > 0 ? (nodes[0].scrollTop+0.000001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.000001) : 0.0;
 	})()`, mainSel), &sliderPos)); err != nil {
-		return 0, "", fmt.Errorf("couldn't calculate scroll position, %w", err)
+		return 0, fmt.Errorf("couldn't calculate scroll position, %w", err)
 	}
 
-	return sliderPos, sliderText, nil
+	return sliderPos, nil
 }
 
 // Resync the library/album of photos
@@ -1708,9 +1701,9 @@ syncAllLoop:
 		}
 
 		var err error
-		sliderPos, _, err = getSliderPosAndText(ctx)
+		sliderPos, err = getSliderPos(ctx)
 		if err != nil {
-			return fmt.Errorf("error getting slider position and text, %w", err)
+			return fmt.Errorf("error getting slider position, %w", err)
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
