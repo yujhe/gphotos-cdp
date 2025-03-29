@@ -894,8 +894,8 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 				}),
 				chromedp.Sleep(10*time.Millisecond),
 
-				chromedp.Evaluate(`!!document.querySelector('`+originalSelector+`')`, hasOriginal),
-				chromedp.Evaluate(`document.querySelector('`+downloadSelector+`').click()`, nil),
+				chromedp.EvaluateAsDevTools(`!!document.querySelector('`+originalSelector+`')`, hasOriginal),
+				chromedp.SendKeys(downloadSelector, kb.Enter),
 			)
 			log.Trace().Msgf("done attempting to request download")
 			return err
