@@ -1682,7 +1682,7 @@ syncAllLoop:
 		if retries%5 == 0 {
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
 			if retries != 0 {
-				log.Debug().Msgf("we seem to be stuck, manually scrolling might help")
+				log.Trace().Msgf("we seem to be stuck, manually scrolling might help")
 				if err := doActionWithTimeout(ctx, chromedp.KeyEvent(kb.ArrowDown), 1000*time.Millisecond); err != nil {
 					log.Warn().Err(err).Msgf("error scrolling page down manually, %v", err)
 				}
