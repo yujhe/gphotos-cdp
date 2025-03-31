@@ -801,8 +801,7 @@ func navWithAction(ctx context.Context, action chromedp.Action) error {
 // requestDownloadBackup sends the Shift+D event, to start the download of the currently
 // viewed item.
 func requestDownloadBackup(ctx context.Context, log zerolog.Logger) error {
-	log.Trace().Msgf("acquiring lock to request download (backup method)")
-	unlock := acquireTabLock()
+	unlock := acquireTabLock(log, "to request download (backup method)")
 	defer unlock()
 	start := time.Now()
 
@@ -871,13 +870,12 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 		}()
 
 		err := func() error {
-			// log.Trace().Msgf("acquiring lock to request download")
-			// unlock := acquireTabLock()
+			// unlock := acquireTabLock(log, "to request download")
 			// defer unlock()
 			start = time.Now()
 			log.Trace().Msgf("requesting download")
 			// context timeout just in case
-			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ctxTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 
 			err := chromedp.Run(ctxTimeout,
@@ -901,7 +899,7 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 			return err
 		}()
 
-		if err != nil && strings.Contains(err.Error(), "Cannot read properties of null (reading 'click')") {
+		if err != nil && (strings.Contains(err.Error(), "Cannot read properties of null (reading 'click')") || errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Could not find node with given id (-32000)")) {
 			err = errCouldNotPressDownloadButton
 		}
 
@@ -912,8 +910,8 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 			return ctx.Err()
 		} else if i >= 3 {
 			log.Debug().Msgf("tried to request download %d times, giving up now", i)
-			return fmt.Errorf("failed to request download after %d tries, %w", i, errCouldNotPressDownloadButton)
-		} else if errors.Is(err, errCouldNotPressDownloadButton) {
+			return fmt.Errorf("failed to request download after %d tries, %w, %w", i, errCouldNotPressDownloadButton, err)
+		} else if errors.Is(err, errCouldNotPressDownloadButton) || errors.Is(err, context.DeadlineExceeded) {
 			log.Debug().Msgf("trying to request download again after error: %v", err)
 		} else {
 			return fmt.Errorf("encountered error '%s' when requesting download", err.Error())
@@ -971,15 +969,19 @@ func (s *Session) navigateWithAction(ctx context.Context, log zerolog.Logger, ac
 
 var queuedTabLocks atomic.Int64
 
-func acquireTabLock() func() {
+func acquireTabLock(log zerolog.Logger, forWhat string) func() {
+	if forWhat != "" {
+		forWhat = fmt.Sprintf(" %s", forWhat)
+	}
+	log.Trace().Msgf("acquiring tab lock%s", forWhat)
 	start := time.Now()
 	queuedTabLocks.Add(1)
 	muTabActivity.Lock()
 	queuedTabLocks.Add(-1)
 	dur := time.Since(start)
-	log.Debug().Int64("duration", dur.Milliseconds()).Msgf("acquired tab lock")
+	log.Debug().Int64("duration", dur.Milliseconds()).Msgf("acquired tab lock%s", forWhat)
 	if dur > 10000*time.Millisecond {
-		log.Warn().Int64("duration", dur.Milliseconds()).Msgf("acquiring tab lock took %d ms (%d in queue), consider reducing worker count", dur.Milliseconds(), queuedTabLocks.Load())
+		log.Warn().Int64("duration", dur.Milliseconds()).Msgf("acquiring tab lock%s took %d ms (%d in queue), consider reducing worker count", forWhat, dur.Milliseconds(), queuedTabLocks.Load())
 	}
 	return muTabActivity.Unlock
 }
@@ -1005,8 +1007,7 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 		n++
 		log := log.With().Int("attempt", n).Logger()
 		if err := func() error {
-			log.Trace().Msgf("acquiring lock to extract photo data")
-			unlock := acquireTabLock()
+			unlock := acquireTabLock(log, "to extract photo data")
 			defer unlock()
 			start := time.Now()
 			log.Trace().Msgf("extracting photo data")
@@ -1427,11 +1428,10 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 			}
 
+			log.Info().Msgf("unrecoverable error occurred during download, removing files already downloaded for this item")
 			// Error downloading original or generated image, remove files already downloaded
 			if err := os.RemoveAll(filepath.Join(s.downloadDir, imageId)); err != nil {
 				log.Err(err).Msgf("error removing files already downloaded: %v", err)
-			} else {
-				log.Debug().Msgf("removed files already downloaded for item that failed to complete")
 			}
 
 			return err
