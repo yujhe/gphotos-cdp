@@ -1004,11 +1004,11 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 	log.Debug().Msg("extracting photo data")
 	for {
 		n++
+		start := time.Now()
 		log := log.With().Int("attempt", n).Logger()
 		if err := func() error {
 			unlock := acquireTabLock(log, "to extract photo data")
 			defer unlock()
-			start := time.Now()
 			log.Trace().Msgf("extracting photo data")
 
 			target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
@@ -1052,13 +1052,14 @@ func (s *Session) getPhotoData(ctx context.Context, log zerolog.Logger, imageId 
 				}
 			}
 
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt to find photo data nodes")
 			return nil
 		}(); err != nil {
 			return PhotoData{}, err
 		} else if len(filename) > 0 && len(dateStr) > 0 && len(timeStr) > 0 {
-			log.Trace().Int("triesToSuccess", n).Msgf("done finding photo data nodes")
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Int("triesToSuccess", n).Msgf("done finding photo data nodes")
 			break
+		} else {
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt to find photo data nodes")
 		}
 
 		if time.Since(start).Seconds() > 200 {
@@ -1126,7 +1127,7 @@ func (s *Session) startDownload(ctx context.Context, log zerolog.Logger, imageId
 			return NewDownload{}, nil, fmt.Errorf("timeout waiting for download to start for %v", imageId)
 		case newDownload := <-downloadChan:
 			log.Trace().Msgf("downloadChan: %v", newDownload)
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("download started")
+			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Str("GUID", newDownload.GUID).Msgf("download started")
 			return newDownload, newDownload.progressChan, nil
 		default:
 			time.Sleep(50 * time.Millisecond)
