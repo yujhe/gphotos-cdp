@@ -1662,7 +1662,7 @@ func (s *Session) resync(ctx context.Context) error {
 			if !done {
 				queueCount := newItemsCount.Load() - int64(downloadedCount)
 				totalCount := syncedCount + estimatedRemaining
-				timeRemaining := time.Since(start) * time.Duration(estimatedRemaining) / time.Duration(int64(downloadedCount)+queueCount/2)
+				timeRemaining := time.Since(start) * time.Duration(estimatedRemaining) / time.Duration(max(1, syncedCount-int(queueCount/2)))
 				log.Info().Msgf("so far: downloaded %d (%d in queue), progress: %.2f%% (%d/%d), estimated remaining: %d (%s)", downloadedCount, queueCount, progress*100, syncedCount, totalCount, estimatedRemaining, timeRemaining.Round(time.Second))
 			} else {
 				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progress*100)
