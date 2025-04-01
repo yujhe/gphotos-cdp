@@ -1527,9 +1527,6 @@ func listenNavEvents(ctx context.Context) {
 }
 
 func getSliderPos(ctx context.Context) (float64, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30000*time.Millisecond)
-	defer cancel()
-
 	var sliderPos float64
 
 	var mainSel string
@@ -1539,15 +1536,23 @@ func getSliderPos(ctx context.Context) (float64, error) {
 		mainSel = `[role="main"]`
 	}
 
-	if err := chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
-	(function() {
-		var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
-		return nodes.length > 0 ? (nodes[0].scrollTop+0.000001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.000001) : 0.0;
-	})()`, mainSel), &sliderPos)); err != nil {
-		return 0, fmt.Errorf("couldn't calculate scroll position, %w", err)
+	var err error
+	for range 5 {
+		ctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
+		defer cancel()
+		err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
+			(function() {
+				var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
+				return nodes.length > 0 ? (nodes[0].scrollTop+0.000001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.000001) : 0.0;
+			})()`, mainSel), &sliderPos))
+		if err != nil {
+			log.Warn().Err(err).Msgf("error getting scroll position")
+		} else {
+			break
+		}
 	}
 
-	return sliderPos, nil
+	return sliderPos, err
 }
 
 // Resync the library/album of photos
