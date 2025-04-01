@@ -883,7 +883,7 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 					// Wait for more options menu to appear
 					if !foundDownloadButton {
 						// Open more options dialog
-						if err := chromedp.EvaluateAsDevTools(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop()?.click()`, nil).Do(ctx); err != nil {
+						if err := chromedp.Evaluate(`[...document.querySelectorAll('`+moreOptionsSelector+`')].pop()?.click()`, nil).Do(ctx); err != nil {
 							return fmt.Errorf("could not open 'more options' dialog due to %w", err)
 						}
 					}
@@ -891,7 +891,7 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 				}),
 				chromedp.Sleep(10*time.Millisecond),
 
-				chromedp.EvaluateAsDevTools(`!!document.querySelector('`+originalSelector+`')`, hasOriginal),
+				chromedp.Evaluate(`!!document.querySelector('`+originalSelector+`')`, hasOriginal),
 				chromedp.SendKeys(downloadSelector, kb.Enter),
 			)
 			log.Trace().Msgf("done attempting to request download")
