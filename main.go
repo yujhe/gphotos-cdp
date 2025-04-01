@@ -209,8 +209,7 @@ type PhotoData struct {
 }
 
 type Job struct {
-	imageIds      []string
-	continueAfter bool
+	imageIds []string
 }
 
 type NewDownload struct {
@@ -1567,10 +1566,10 @@ func (s *Session) resync(ctx context.Context) error {
 
 	lastNode := &cdp.Node{}
 	var nodes []*cdp.Node
-	i := 0             // next node to process in nodes array
-	n := 0             // number of nodes processed in all
-	newItemsCount := 0 // number of photos downloaded
-	retries := 0       // number of subsequent failed attempts to find new items to download
+	i := 0                         // next node to process in nodes array
+	n := 0                         // number of nodes processed in all
+	var newItemsCount atomic.Int64 // number of photos downloaded
+	retries := 0                   // number of subsequent failed attempts to find new items to download
 	sliderPos := 0.0
 	estimatedRemaining := 1000
 	photoNodeSelector := s.getPhotoNodeSelector()
@@ -1639,6 +1638,7 @@ func (s *Session) resync(ctx context.Context) error {
 	go func(ctx context.Context) {
 		lastSyncedCount := 0
 		iterationsWithNoProgressCount := 0
+		start := time.Now()
 		for {
 			done := false
 			select {
@@ -1651,16 +1651,13 @@ func (s *Session) resync(ctx context.Context) error {
 				downloadedCount++
 				return true
 			})
-			syncedCount := 0
-			s.foundItems.Range(func(key, value interface{}) bool {
-				syncedCount++
-				return true
-			})
-			// sliderPos doesn't get updated if worker keeps going beyond batch, calculate progress again here
-			progress := min(float64(syncedCount)/float64(estimatedRemaining+n), 1)
-			estimatedRemaining := int(math.Floor((1/progress - 1) * float64(syncedCount)))
+			syncedCount := n
+			progress := min(float64(syncedCount)/float64(estimatedRemaining+syncedCount), 1)
 			if !done {
-				log.Info().Msgf("so far: synced %d items, downloaded %d, progress: %.2f%%, estimated remaining: %d", syncedCount, downloadedCount, progress*100, estimatedRemaining)
+				queueCount := newItemsCount.Load() - int64(downloadedCount)
+				totalCount := syncedCount + estimatedRemaining
+				timeRemaining := time.Since(start) * time.Duration(estimatedRemaining) / time.Duration(int64(downloadedCount)+queueCount/2)
+				log.Info().Msgf("so far: downloaded %d (%d in queue), progress: %.2f%% (%d/%d), estimated remaining: %d (%s)", downloadedCount, queueCount, progress*100, syncedCount, totalCount, estimatedRemaining, timeRemaining.Round(time.Second))
 			} else {
 				log.Info().Msgf("in total: synced %v items, downloaded %v, progress: %.2f%%", syncedCount, downloadedCount, progress*100)
 				return
@@ -1788,7 +1785,7 @@ syncAllLoop:
 
 		if len(imageIds) > 0 {
 			log.Debug().Msgf("adding %d items to queue", len(imageIds))
-			job := Job{imageIds, false}
+			job := Job{imageIds}
 
 			log.Trace().Msgf("queuing job with itemIds: %s", strings.Join(job.imageIds, ", "))
 
@@ -1804,7 +1801,7 @@ syncAllLoop:
 			}
 		}
 
-		newItemsCount += len(imageIds)
+		newItemsCount.Add(int64(len(imageIds)))
 	}
 	close(jobChan)
 
@@ -1853,16 +1850,8 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 		for job := range jobs {
 			log.Debug().Msgf("worker received batch of %d items", len(job.imageIds))
 			log.Trace().Msgf("starting job with itemIds: %s", strings.Join(job.imageIds, ", "))
-			i := -1
 			isConsecutive := false
-			for {
-				i++
-				imageId := ""
-				if i < len(job.imageIds) {
-					imageId = job.imageIds[i]
-				} else if !job.continueAfter || (*batchSizeFlag > 0 && i >= *batchSizeFlag) {
-					break
-				}
+			for i, imageId := range job.imageIds {
 				log := log.With().Str("itemId", imageId).Int("batchItemIndex", i).Logger()
 
 				log.Trace().Msgf("processing batch item %d", i)
@@ -1876,12 +1865,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
 						isConsecutive = false
 					}
-					if i >= len(job.imageIds) {
-						log.Debug().Msgf("ending batch due to skipped item and no more items in batch")
-						break
-					} else {
-						downloadedItemId = ""
-					}
+					downloadedItemId = ""
 				} else if err != nil {
 					errChan <- err
 					return
@@ -1896,10 +1880,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 }
 
 func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, imageId string, downloadChan <-chan NewDownload, isConsecutive bool) (string, error) {
-	expectedLocation := ""
-	if imageId != "" {
-		expectedLocation = s.getPhotoUrl(imageId)
-	}
+	expectedLocation := s.getPhotoUrl(imageId)
 
 	var previousLocation string
 	if err := chromedp.Run(ctx, chromedp.Location(&previousLocation)); err != nil {
@@ -1918,10 +1899,8 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 			chromedp.Location(&location),
 			chromedp.ActionFunc(
 				func(ctx context.Context) error {
-					if expectedLocation != "" && location != expectedLocation {
+					if location != expectedLocation {
 						log.Warn().Msgf("after nav to right, expected location %s, got %s", expectedLocation, location)
-					} else if expectedLocation == "" && location == previousLocation {
-						log.Warn().Msgf("after nav to right, got same location %s", location)
 					} else {
 						atExpectedUrl = true
 					}
@@ -1937,9 +1916,6 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 	}
 
 	if !atExpectedUrl {
-		if imageId == "" {
-			return "", errAbortBatch
-		}
 		log.Trace().Msgf("navigating to expected location")
 		if err := s.navigateToPhoto(ctx, log, imageId); err != nil {
 			return "", err
@@ -1947,19 +1923,6 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 	}
 
 	time.Sleep(2 * time.Millisecond)
-
-	if imageId == "" {
-		var location string
-		if err := chromedp.Run(ctx, chromedp.Location(&location)); err != nil {
-			return "", fmt.Errorf("error getting location: %w", err)
-		}
-		var err error
-		imageId, err = imageIdFromUrl(location)
-		if err != nil {
-			return "", fmt.Errorf("error getting image ID from URL: %w", err)
-		}
-		log = log.With().Str("itemId", imageId).Logger()
-	}
 
 	isNew, err := s.isNewItem(log, imageId, true)
 	if err != nil {
