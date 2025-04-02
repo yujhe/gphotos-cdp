@@ -1424,14 +1424,16 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		jobsRemaining--
 		if err != nil {
 			log.Trace().Msgf("downloadAndProcessItem: job result %s, %d jobs remaining", err.Error(), jobsRemaining)
-			if !errors.Is(err, context.Canceled) {
-				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
-			}
+			if !errors.Is(err, errStillProcessing) {
+				if !errors.Is(err, context.Canceled) {
+					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
+				}
 
-			log.Info().Msgf("unrecoverable error occurred during download, removing files already downloaded for this item")
-			// Error downloading original or generated image, remove files already downloaded
-			if err := os.RemoveAll(filepath.Join(s.downloadDir, imageId)); err != nil {
-				log.Err(err).Msgf("error removing files already downloaded: %v", err)
+				log.Info().Msgf("unrecoverable error occurred during download, removing files already downloaded for this item")
+				// Error downloading original or generated image, remove files already downloaded
+				if err := os.RemoveAll(filepath.Join(s.downloadDir, imageId)); err != nil {
+					log.Err(err).Msgf("error removing files already downloaded: %v", err)
+				}
 			}
 
 			return err
