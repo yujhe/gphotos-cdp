@@ -351,9 +351,18 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			c := chromedp.FromContext(ctx)
-			return browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.downloadDirTmp).WithEventsEnabled(true).
+			if err := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(s.downloadDirTmp).WithEventsEnabled(true).
 				// use the Browser executor so that it does not pass "sessionId" to the command.
-				Do(cdp.WithExecutor(ctx, c.Browser))
+				Do(cdp.WithExecutor(ctx, c.Browser)); err != nil {
+				return err
+			}
+
+			_, product, _, _, _, err := browser.GetVersion().Do(ctx)
+			if err != nil {
+				return err
+			}
+			log.Info().Msgf("Browser version: %s", product)
+			return nil
 		}),
 	); err != nil {
 		panic(err)
