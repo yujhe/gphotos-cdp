@@ -16,3 +16,5 @@ gphotos-cdp
 /photos
 /profile
 .DS_Store
+/sync.log
+/.profile
