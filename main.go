@@ -1540,8 +1540,8 @@ func getSliderPos(ctx context.Context) (float64, error) {
 	}
 
 	var err error
-	for range 5 {
-		ctx, cancel := context.WithTimeout(ctx, 5000*time.Millisecond)
+	for range 7 {
+		ctx, cancel := context.WithTimeout(ctx, 4000*time.Millisecond)
 		defer cancel()
 		err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
 			(function() {
@@ -1589,7 +1589,7 @@ func (s *Session) resync(ctx context.Context) error {
 		return fmt.Errorf("error finding photo nodes, %w", err)
 	}
 	if len(nodes) == 0 {
-		log.Info().Msg("no photos to resync")
+		log.Info().Msg("no photos to sync")
 		return nil
 	}
 
@@ -1708,6 +1708,7 @@ syncAllLoop:
 		var err error
 		sliderPos, err = getSliderPos(ctx)
 		if err != nil {
+			captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 			return fmt.Errorf("error getting slider position, %w", err)
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
