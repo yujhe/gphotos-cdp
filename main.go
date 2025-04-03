@@ -565,24 +565,15 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 			scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
 			log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
 			for range 20 {
-				if err := chromedp.Evaluate(fmt.Sprintf(`
-						(function() {
-							const main = document.querySelector('[role="main"]');
-							const scrollTarget = %f;
-							main.scrollTo(0, main.scrollHeight*scrollTarget);
-						})();
-					`, scrollTarget), nil).Do(ctx); err != nil {
+				if err := setScrollPosition(ctx, scrollTarget); err != nil {
 					return err
 				}
 				time.Sleep(100 * time.Millisecond)
-				if err := chromedp.Evaluate(`
-						(function() {
-							const main = document.querySelector('[role="main"]');
-							return (main.scrollTop+0.0001)/(main.scrollHeight-main.clientHeight+0.0001);
-						})();
-					`, &scrollPos).Do(ctx); err != nil {
+				_scrollPos, err := getScrollPosition(ctx)
+				if err != nil {
 					return err
 				}
+				scrollPos = _scrollPos
 				if math.Abs(scrollPos-scrollTarget) < 0.002 {
 					break
 				}
@@ -1529,7 +1520,27 @@ func listenNavEvents(ctx context.Context) {
 	})
 }
 
-func getSliderPos(ctx context.Context) (float64, error) {
+func setScrollPosition(ctx context.Context, pos float64) error {
+	var mainSel string
+	if len(*albumIdFlag) > 1 {
+		mainSel = `c-wiz c-wiz c-wiz`
+	} else {
+		mainSel = `[role="main"]`
+	}
+
+	if err := chromedp.Evaluate(fmt.Sprintf(`
+		(function() {
+			var main = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden')[0];
+			const scrollTarget = %f;
+			main.scrollTo(0, main.scrollHeight*scrollTarget);
+		})();
+	`, mainSel, pos), nil).Do(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func getScrollPosition(ctx context.Context) (float64, error) {
 	var sliderPos float64
 
 	var mainSel string
@@ -1545,8 +1556,8 @@ func getSliderPos(ctx context.Context) (float64, error) {
 		defer cancel()
 		err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
 			(function() {
-				var nodes = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden');
-				return nodes.length > 0 ? (nodes[0].scrollTop+0.000001)/(nodes[0].scrollHeight-nodes[0].clientHeight+0.000001) : 0.0;
+				var main = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden')[0];
+				return (main.scrollTop+0.000001)/(main.scrollHeight-main.clientHeight+0.000001);
 			})()`, mainSel), &sliderPos))
 		if err != nil {
 			log.Warn().Err(err).Msgf("error getting scroll position")
@@ -1705,19 +1716,19 @@ syncAllLoop:
 			break
 		}
 
-		var err error
-		sliderPos, err = getSliderPos(ctx)
-		if err != nil {
-			if n == 0 {
-				// sometimes chromedp gets into a bad state here, so let's restart navigation
-				if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond, 5); err != nil {
-					return err
-				}
-				chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			} else {
-				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
-				return fmt.Errorf("error getting slider position, %w", err)
+		_sliderPos, scrollErr := getScrollPosition(ctx)
+		if scrollErr != nil {
+			// sometimes chromedp gets into a bad state here, so let's restart navigation and try again
+			if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond, 5); err != nil {
+				return fmt.Errorf("error getting slider position, %w, followed by error when attempting to recover, %v", scrollErr, err)
 			}
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			if err := setScrollPosition(ctx, sliderPos); err != nil {
+				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
+				return fmt.Errorf("error getting slider position, %w, followed by error when attempting to recover, %v", scrollErr, err)
+			}
+		} else {
+			sliderPos = _sliderPos
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
