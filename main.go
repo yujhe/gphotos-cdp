@@ -1540,7 +1540,7 @@ func getSliderPos(ctx context.Context) (float64, error) {
 	}
 
 	var err error
-	for range 7 {
+	for range 3 {
 		ctx, cancel := context.WithTimeout(ctx, 4000*time.Millisecond)
 		defer cancel()
 		err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
@@ -1708,8 +1708,16 @@ syncAllLoop:
 		var err error
 		sliderPos, err = getSliderPos(ctx)
 		if err != nil {
-			captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
-			return fmt.Errorf("error getting slider position, %w", err)
+			if n == 0 {
+				// sometimes chromedp gets into a bad state here, so let's restart navigation
+				if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond, 5); err != nil {
+					return err
+				}
+				chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			} else {
+				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
+				return fmt.Errorf("error getting slider position, %w", err)
+			}
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
