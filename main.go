@@ -328,6 +328,7 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		chromedp.Flag("accept-lang", "en-US,en"),
 		chromedp.Flag("window-size", "1920,1080"),
 		chromedp.Flag("headless", "new"),
+		chromedp.Flag("enable-logging", true),
 		chromedp.Flag("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"),
 	)
 
@@ -384,7 +385,7 @@ func (s *Session) cdpLog(format string, v ...any) {
 }
 
 func (s *Session) cdpDebug(format string, v ...any) {
-	// log.Trace().Msgf(format, v...)
+	log.Trace().Msgf(format, v...)
 }
 
 func (s *Session) cdpError(format string, v ...any) {
