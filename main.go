@@ -579,11 +579,9 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 					return err
 				}
 				time.Sleep(100 * time.Millisecond)
-				_scrollPos, err := getScrollPosition(ctx)
-				if err != nil {
+				if err := getScrollPosition(ctx, &scrollPos); err != nil {
 					return err
 				}
-				scrollPos = _scrollPos
 				if math.Abs(scrollPos-scrollTarget) < 0.002 {
 					break
 				}
@@ -1551,9 +1549,7 @@ func setScrollPosition(ctx context.Context, pos float64) error {
 	return nil
 }
 
-func getScrollPosition(ctx context.Context) (float64, error) {
-	var sliderPos float64
-
+func getScrollPosition(ctx context.Context, sliderPos *float64) error {
 	var mainSel string
 	if len(*albumIdFlag) > 1 {
 		mainSel = `c-wiz c-wiz c-wiz`
@@ -1574,7 +1570,7 @@ func getScrollPosition(ctx context.Context) (float64, error) {
 			err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
 				(function() {
 					var main = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden')[0];
-					return (main.scrollTop+0.000001)/(main.scrollHeight-main.clientHeight+0.000001);
+					return main ? (main.scrollTop+0.000001)/(main.scrollHeight-main.clientHeight+0.000001) : 0.0;
 				})()`, mainSel), &sliderPos))
 		}()
 		if err == nil {
@@ -1583,7 +1579,7 @@ func getScrollPosition(ctx context.Context) (float64, error) {
 		log.Warn().Err(err).Msgf("error getting scroll position")
 	}
 
-	return sliderPos, err
+	return err
 }
 
 // Resync the library/album of photos
@@ -1733,8 +1729,7 @@ syncAllLoop:
 			break
 		}
 
-		_sliderPos, scrollErr := getScrollPosition(ctx)
-		if scrollErr != nil {
+		if scrollErr := getScrollPosition(ctx, &sliderPos); scrollErr != nil {
 			// sometimes chromedp gets into a bad state here, so let's restart navigation and try again
 			if err := s.navigateWithAction(ctx, log.Logger, chromedp.Navigate(gphotosUrl+s.userPath+s.albumPath), "to start", 20000*time.Millisecond, 5); err != nil {
 				return fmt.Errorf("error getting slider position, %w, followed by error when attempting to recover, %v", scrollErr, err)
@@ -1744,8 +1739,6 @@ syncAllLoop:
 				captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
 				return fmt.Errorf("error getting slider position, %w, followed by error when attempting to recover, %v", scrollErr, err)
 			}
-		} else {
-			sliderPos = _sliderPos
 		}
 		log.Trace().Msgf("slider position: %.2f%%", sliderPos*100)
 
