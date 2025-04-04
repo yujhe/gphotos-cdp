@@ -864,16 +864,17 @@ func requestDownload(ctx context.Context, log zerolog.Logger, original bool, has
 	for {
 		i++
 		log := log.With().Int("attempt", i).Logger()
-		var start time.Time
-		defer func() {
-			log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt request download")
-		}()
-
 		err := func() error {
+			var start time.Time
+			defer func() {
+				log.Debug().Int64("duration", time.Since(start).Milliseconds()).Msgf("done attempt request download")
+			}()
+
 			// unlock := acquireTabLock(log, "to request download")
 			// defer unlock()
 			start = time.Now()
 			log.Trace().Msgf("requesting download")
+
 			// context timeout just in case
 			ctxTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
@@ -1562,18 +1563,24 @@ func getScrollPosition(ctx context.Context) (float64, error) {
 
 	var err error
 	for range 3 {
-		ctx, cancel := context.WithTimeout(ctx, 4000*time.Millisecond)
-		defer cancel()
-		err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
-			(function() {
-				var main = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden')[0];
-				return (main.scrollTop+0.000001)/(main.scrollHeight-main.clientHeight+0.000001);
-			})()`, mainSel), &sliderPos))
-		if err != nil {
-			log.Warn().Err(err).Msgf("error getting scroll position")
-		} else {
+		func() {
+			ctx, cancel := context.WithTimeout(ctx, 4000*time.Millisecond)
+			defer cancel()
+			if err != nil {
+				unlock := acquireTabLock(log.Logger, "getScrollPosition")
+				defer unlock()
+				target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
+			}
+			err = chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf(`
+				(function() {
+					var main = [...document.querySelectorAll('%s')].filter(x => x.querySelector('a[href*="/photo/"]') && getComputedStyle(x).visibility != 'hidden')[0];
+					return (main.scrollTop+0.000001)/(main.scrollHeight-main.clientHeight+0.000001);
+				})()`, mainSel), &sliderPos))
+		}()
+		if err == nil {
 			break
 		}
+		log.Warn().Err(err).Msgf("error getting scroll position")
 	}
 
 	return sliderPos, err
