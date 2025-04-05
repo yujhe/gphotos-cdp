@@ -66,6 +66,7 @@ var (
 	profileFlag     = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	fromFlag        = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag          = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
+	untilFlag       = flag.String("until", "", "stop syncing at this photo")
 	runFlag         = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag     = flag.Bool("v", false, "be verbose")
 	headlessFlag    = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
@@ -759,12 +760,12 @@ func (s *Session) navToEnd(ctx context.Context) error {
 }
 
 // doRun runs *runFlag as a command on the given filePath.
-func doRun(filePath string) error {
+func doRun(filePath, imageId string) error {
 	if *runFlag == "" {
 		return nil
 	}
 	log.Debug().Msgf("running %v on %v", *runFlag, filePath)
-	cmd := exec.Command(*runFlag, filePath)
+	cmd := exec.Command(*runFlag, filePath, imageId)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -1185,7 +1186,7 @@ func (*Session) checkForStillProcessing(ctx context.Context) error {
 		}
 	}
 	if isStillProcessing {
-		log.Warn().Msg("received 'Video is still processing' error")
+		log.Debug().Msg("received 'Video is still processing' error")
 		return errStillProcessing
 	}
 	return nil
@@ -1308,7 +1309,7 @@ func (s *Session) processDownload(log zerolog.Logger, downloadInfo NewDownload, 
 	}
 
 	for _, f := range filePaths {
-		if err := doRun(f); err != nil {
+		if err := doRun(f, imageId); err != nil {
 			return err
 		}
 	}
@@ -1794,6 +1795,7 @@ syncAllLoop:
 		}
 
 		imageIds := []string{}
+		foundUntil := false
 
 		for i < len(nodes) && (*batchSizeFlag <= 0 || len(imageIds) < *batchSizeFlag) {
 			lastNode = nodes[i]
@@ -1803,6 +1805,11 @@ syncAllLoop:
 			imageId, err := imageIdFromUrl(lastNode.AttributeValue("href"))
 			if err != nil {
 				return fmt.Errorf("error getting item id from url, %w", err)
+			}
+
+			if strings.EqualFold(imageId, *untilFlag) {
+				foundUntil = true
+				break
 			}
 
 			log := log.With().Str("itemId", imageId).Logger()
@@ -1840,6 +1847,10 @@ syncAllLoop:
 		}
 
 		newItemsCount.Add(int64(len(imageIds)))
+
+		if foundUntil {
+			break
+		}
 	}
 	close(jobChan)
 
@@ -1900,7 +1911,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				} else if errors.Is(err, errAlreadyDownloaded) || errors.Is(err, errStillProcessing) {
 					if errors.Is(err, errStillProcessing) {
 						// Old highlight videos are no longer available
-						log.Info().Msg("skipping generated highlight video that Google seems to have lost")
+						log.Info().Msg("skipping generated highlight video that Google cannot be downloaded")
 						isConsecutive = false
 					}
 					downloadedItemId = ""
@@ -1910,7 +1921,7 @@ func (s *Session) downloadWorker(workerId int, jobs <-chan Job, resultChan chan<
 				}
 				resultChan <- downloadedItemId
 			}
-			log.Info().Msgf("worker finished processing batch of %d items", len(job.imageIds))
+			log.Debug().Msgf("worker finished processing batch of %d items", len(job.imageIds))
 		}
 		errChan <- nil
 	}()
