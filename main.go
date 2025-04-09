@@ -77,6 +77,7 @@ var (
 	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
 	batchSizeFlag   = flag.Int("batchsize", 0, "number of photos to download in one batch")
+	execPathFlag    = flag.String("execpath", "", "path to Chrome/Chromium binary to use")
 )
 
 const gphotosUrl = "https://photos.google.com"
@@ -328,7 +329,6 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		chromedp.Flag("lang", "en-US,en"),
 		chromedp.Flag("accept-lang", "en-US,en"),
 		chromedp.Flag("window-size", "1920,1080"),
-		chromedp.Flag("headless", "new"),
 		chromedp.Flag("enable-logging", true),
 		chromedp.Flag("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"),
 	)
@@ -339,6 +339,11 @@ func (s *Session) NewWindow() (context.Context, context.CancelFunc) {
 		opts = append(opts, chromedp.Flag("hide-scrollbars", false))
 		opts = append(opts, chromedp.Flag("mute-audio", false))
 	}
+
+	if *execPathFlag != "" {
+		opts = append(opts, chromedp.ExecPath(*execPathFlag))
+	}
+
 	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	s.chromeExecCancel = cancel
 
