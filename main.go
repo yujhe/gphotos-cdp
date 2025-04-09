@@ -430,7 +430,7 @@ func (s *Session) login(ctx context.Context) error {
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
 		// authenticated.
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			tick := time.Second
+			tick := 2 * time.Second
 			timeout := time.Now().Add(2 * time.Minute)
 			var location string
 			for {
@@ -448,7 +448,49 @@ func (s *Session) login(ctx context.Context) error {
 					if err := chromedp.Evaluate(`document.querySelector('[data-authuser][data-item-index="`+strconv.Itoa(userIndex)+`"]')?.click()`, nil).Do(ctx); err != nil {
 						return err
 					}
-					time.Sleep(500 * time.Millisecond)
+					time.Sleep(tick)
+					continue
+				}
+				if strings.Contains(location, "signin/challenge/dp") {
+					log.Info().Msgf("waiting for user to approve login with other device")
+					time.Sleep(tick)
+					continue
+				}
+				if strings.Contains(location, "signin/rejected") {
+					return errors.New("google rejected automated login")
+				}
+				var nodes []*cdp.Node
+				email := os.Getenv("GPHOTOS_EMAIL")
+				if email != "" {
+					email_node := "#identifierId:not([type=hidden])"
+					log.Debug().Msgf("checking for email node: %s", email_node)
+					if err := chromedp.Nodes(email_node, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+						return err
+					}
+					if len(nodes) > 0 {
+						log.Info().Msgf("logging in with user email: %s", email)
+						if err := chromedp.SendKeys(email_node, email+kb.Enter).Do(ctx); err != nil {
+							return err
+						}
+						time.Sleep(tick)
+						continue
+					}
+				}
+				password := os.Getenv("GPHOTOS_PASSWORD")
+				if password != "" {
+					password_node := "input[name=Passwd]"
+					log.Debug().Msgf("checking for password node: %s", password_node)
+					if err := chromedp.Nodes(password_node, &nodes, chromedp.ByQuery, chromedp.AtLeast(0)).Do(ctx); err != nil {
+						return err
+					}
+					if len(nodes) > 0 {
+						log.Info().Msgf("logging in with user password")
+						if err := chromedp.SendKeys(password_node, password+kb.Enter).Do(ctx); err != nil {
+							return err
+						}
+						time.Sleep(tick * time.Duration(3))
+						continue
+					}
 				}
 				if *headlessFlag {
 					captureScreenshot(ctx, filepath.Join(s.downloadDir, "error"))
