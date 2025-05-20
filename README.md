@@ -1,54 +1,86 @@
-gphotos-cdp
-========
+# gphotos-cdp
 
 gphotos-cdp is a program that downloads your photos stored in Google Photos.
 
-Usage
---------
+Forked from [spraot/gphotos-cdp](https://github.com/spraot/gphotos-cdp).
+
+## Installation
+
+```sh
+go build -o bin/gphotos-cdp
 ```
+
+## Quickstart
+
+```sh
 # Opens browser for authentication, downloads all photos to ./photos
-gphotos-cdp -dldir photos
+./bin/gphotos-cdp -dldir photos -loglevel info
 
 # To run headless, you must first run:
-gphotos-cdp -dev -dldir photos
+./bin/gphotos-cdp -dev -dldir photos -loglevel info
 
 # After successful authentication, you can stop the process and run this instead:
-gphotos-cdp -dev -headless -dldir photos
+./bin/gphotos-cdp -dev -headless -dldir photos -loglevel info
 
 # To sync a single album, you can use the -album flag:
-gphotos-cdp -dev -dldir photos -album 1234567890ABCDEF
-
-# For more options, check the help output:
-gphotos-cdp -h
+./bin/gphotos-cdp -dev -dldir photos -album 1234567890ABCDEF -loglevel info
 ```
 
-What?
---------
+## Usage
 
-This program uses the Chrome DevTools Protocol to drive a Chrome session that
-downloads your photos stored in Google Photos.
-For each downloaded photo, an external program can be run on it (with the -run
-flag) right after it is downloaded to e.g. upload it somewhere else. See the
-upload/perkeep program, which uploads to a Perkeep server, for an example.
+```sh
+./bin/gphotos-cdp -h
 
+Usage of ./bin/gphotos-cdp:
+  -album string
+        ID of album to download, has no effect if lastdone file is found or if -start contains full URL
+  -albumtype string
+        type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL (default "album")
+  -batchsize int
+        number of photos to download in one batch
+  -dev
+        dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.
+  -dldir string
+        where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.
+  -execpath string
+        path to Chrome/Chromium binary to use
+  -from string
+        earliest date to sync (YYYY-MM-DD)
+  -headless
+        Start chrome browser in headless mode (must use -dev and have already authenticated).
+  -json
+        output logs in JSON format
+  -loglevel string
+        log level: debug, info, warn, error, fatal, panic
+  -n int
+        number of items to download. If negative, get them all. (default -1)
+  -profile string
+        like -dev, but with a user-provided profile dir
+  -removed
+        save list of files found locally that appear to be deleted from Google Photos
+  -run string
+        the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.
+  -to string
+        latest date to sync (YYYY-MM-DD)
+  -until string
+        stop syncing at this photo
+  -v    be verbose
+  -workers int
+        number of concurrent downloads allowed (default 1)
+```
 
-Why?
---------
+## What?
 
-We want to incrementally download our own photos out of Google Photos. Google offers
-no APIs to do this, so we have to scrape the website.
+This program uses the Chrome DevTools Protocol to drive a Chrome session that downloads your photos stored in Google Photos. For each downloaded photo, an external program can be run on it (with the -run flag) right after it is downloaded to e.g. upload it somewhere else.
 
-We can get our original photos out with [Google Takeout](https://takeout.google.com/),
-but only manually, and slowly. We don't want to have to remember to do
-it (or remember to renew the time-limited scheduled takeouts) and we'd
-like our photos mirrored in seconds or minutes, not weeks.
+## Why?
 
+We want to incrementally download our own photos out of Google Photos. Google offers no APIs to do this, so we have to scrape the website.
 
-What if Google Photos breaks this tool on purpose or accident?
---------
+We can get our original photos out with [Google Takeout](https://takeout.google.com/), but only manually, and slowly. We don't want to have to remember to do it (or remember to renew the time-limited scheduled takeouts) and we'd like our photos mirrored in seconds or minutes, not weeks.
+
+### What if Google Photos breaks this tool on purpose or accident?
 
 I guess we'll have to continually update it.
 
-But that's no different than using people's APIs, because companies all seem to
-be deprecating and changing their APIs regularly too.
-
+But that's no different than using people's APIs, because companies all seem to be deprecating and changing their APIs regularly too.
