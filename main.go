@@ -60,24 +60,25 @@ import (
 )
 
 var (
-	nItemsFlag      = flag.Int("n", -1, "number of items to download. If negative, get them all.")
-	devFlag         = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	downloadDirFlag = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	profileFlag     = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
-	fromFlag        = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
-	toFlag          = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
-	untilFlag       = flag.String("until", "", "stop syncing at this photo")
-	runFlag         = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
-	verboseFlag     = flag.Bool("v", false, "be verbose")
-	headlessFlag    = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
-	jsonLogFlag     = flag.Bool("json", false, "output logs in JSON format")
-	logLevelFlag    = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
-	removedFlag     = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
-	workersFlag     = flag.Int64("workers", 1, "number of concurrent downloads allowed")
-	albumIdFlag     = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
-	albumTypeFlag   = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
-	batchSizeFlag   = flag.Int("batchsize", 0, "number of photos to download in one batch")
-	execPathFlag    = flag.String("execpath", "", "path to Chrome/Chromium binary to use")
+	nItemsFlag       = flag.Int("n", -1, "number of items to download. If negative, get them all.")
+	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
+	downloadDirFlag  = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
+	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
+	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
+	untilFlag        = flag.String("until", "", "stop syncing at this photo")
+	runFlag          = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	verboseFlag      = flag.Bool("v", false, "be verbose")
+	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
+	jsonLogFlag      = flag.Bool("json", false, "output logs in JSON format")
+	logLevelFlag     = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	removedFlag      = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
+	workersFlag      = flag.Int64("workers", 1, "number of concurrent downloads allowed")
+	albumIdFlag      = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
+	albumTypeFlag    = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
+	batchSizeFlag    = flag.Int("batchsize", 0, "number of photos to download in one batch")
+	execPathFlag     = flag.String("execpath", "", "path to Chrome/Chromium binary to use")
+	skipDownloadFlag = flag.Bool("skipdownload", false, "skip download of photos, useful for dry runs or metadata collection")
 )
 
 const gphotosUrl = "https://photos.google.com"
@@ -1396,6 +1397,17 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 			photoDataChan <- data
 		}
 	}()
+
+	if *skipDownloadFlag {
+		log.Debug().Msg("skipping download photo due to -skipdownload flag")
+		// Wait for the getPhotoData goroutine to finish its work or error out.
+		errPhotoData := <-errChan
+		if errPhotoData != nil {
+			// Propagate error, if getPhotoData itself had an error (e.g., date range, or actual error fetching metadata),
+			return errPhotoData
+		}
+		return nil // Successfully skipped
+	}
 
 	startDownloadMu := sync.Mutex{}
 	hasOriginalChan := make(chan bool, 1)
