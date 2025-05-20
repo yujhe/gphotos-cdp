@@ -160,8 +160,8 @@ func main() {
 
 	log.Info().Msgf("session dir: %v", s.profileDir)
 
-	if err := s.cleanDownloadDir(); err != nil {
-		log.Fatal().Msgf("failed to clean download directory %v: %v", s.downloadDir, err)
+	if err := s.cleanDownloadDirTmp(); err != nil {
+		log.Fatal().Msgf("failed to clean tmp download directory %v: %v", s.downloadDirTmp, err)
 	}
 
 	ctx, cancel := s.NewWindow()
@@ -400,8 +400,8 @@ func (s *Session) cdpError(format string, v ...any) {
 	}
 }
 
-// cleanDownloadDir removes all files (but not directories) from s.downloadDir
-func (s *Session) cleanDownloadDir() error {
+// cleanDownloadDirTmp removes all files (but not directories) from s.downloadDirTmp
+func (s *Session) cleanDownloadDirTmp() error {
 	if s.downloadDir == "" {
 		return nil
 	}
