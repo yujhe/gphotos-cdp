@@ -14,16 +14,16 @@ go build -o bin/gphotos-cdp
 
 ```sh
 # Opens browser for authentication, downloads all photos to ./photos
-./bin/gphotos-cdp -dldir photos -loglevel info
+./bin/gphotos-cdp -download-dir photos -log-level info
 
 # To run headless, you must first run:
-./bin/gphotos-cdp -dev -dldir photos -loglevel info
+./bin/gphotos-cdp -dev -download-dir photos -log-level info
 
 # After successful authentication, you can stop the process and run this instead:
-./bin/gphotos-cdp -dev -headless -dldir photos -loglevel info
+./bin/gphotos-cdp -dev -headless -download-dir photos -log-level info
 
 # To sync a single album, you can use the -album flag:
-./bin/gphotos-cdp -dev -dldir photos -album 1234567890ABCDEF -loglevel info
+./bin/gphotos-cdp -dev -download-dir photos -album 1234567890ABCDEF -log-level info
 ```
 
 ## Usage
@@ -34,15 +34,15 @@ go build -o bin/gphotos-cdp
 Usage of ./bin/gphotos-cdp:
   -album string
         ID of album to download, has no effect if lastdone file is found or if -start contains full URL
-  -albumtype string
+  -album-type string
         type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL (default "album")
-  -batchsize int
+  -batch-size int
         number of photos to download in one batch
   -dev
         dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.
-  -dldir string
+  -download-dir string
         where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.
-  -execpath string
+  -chrome-exec-path string
         path to Chrome/Chromium binary to use
   -from string
         earliest date to sync (YYYY-MM-DD)
@@ -50,12 +50,14 @@ Usage of ./bin/gphotos-cdp:
         Start chrome browser in headless mode (must use -dev and have already authenticated).
   -json
         output logs in JSON format
-  -loglevel string
+  -log-level string
         log level: debug, info, warn, error, fatal, panic
   -profile string
         like -dev, but with a user-provided profile dir
   -run string
         the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.
+  -skip-download
+        skip download of photos, useful for dry runs or metadata collection
   -to string
         latest date to sync (YYYY-MM-DD)
   -until string

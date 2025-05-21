@@ -61,7 +61,7 @@ var defaultDownloadDir = filepath.Join(os.Getenv("HOME"), "Downloads", "gphotos-
 
 var (
 	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	downloadDirFlag  = flag.String("dldir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
+	downloadDirFlag  = flag.String("download-dir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
@@ -70,13 +70,13 @@ var (
 	verboseFlag      = flag.Bool("v", false, "be verbose")
 	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
 	jsonLogFlag      = flag.Bool("json", false, "output logs in JSON format")
-	logLevelFlag     = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
+	logLevelFlag     = flag.String("log-level", "", "log level: debug, info, warn, error, fatal, panic")
 	workersFlag      = flag.Int64("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag      = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
-	albumTypeFlag    = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
-	batchSizeFlag    = flag.Int("batchsize", 0, "number of photos to download in one batch")
-	execPathFlag     = flag.String("execpath", "", "path to Chrome/Chromium binary to use")
-	skipDownloadFlag = flag.Bool("skipdownload", false, "skip download of photos, useful for dry runs or metadata collection")
+	albumTypeFlag    = flag.String("album-type", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
+	batchSizeFlag    = flag.Int("batch-size", 0, "number of photos to download in one batch")
+	execPathFlag     = flag.String("chrome-exec-path", "", "path to Chrome/Chromium binary to use")
+	skipDownloadFlag = flag.Bool("skip-download", false, "skip download of photos, useful for dry runs or metadata collection")
 )
 
 const gphotosUrl = "https://photos.google.com"
