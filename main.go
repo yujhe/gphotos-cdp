@@ -29,7 +29,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -48,7 +47,6 @@ import (
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
@@ -2127,9 +2125,11 @@ func getContentOfFirstVisibleNodeScript(sel string, imageId string) string {
 }
 
 func (s *Session) dirHasFiles(imageId string) (bool, error) {
-	if _, exists := s.existingItems.Load(imageId); !exists {
-		return false, nil
-	}
+	// FIXME: check file exist from db
+	// if _, exists := s.existingItems.Load(imageId); !exists {
+	// return false, nil
+	// }
+
 	entries, err := os.ReadDir(filepath.Join(s.downloadDir, imageId))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
