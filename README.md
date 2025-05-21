@@ -52,8 +52,6 @@ Usage of ./bin/gphotos-cdp:
         output logs in JSON format
   -loglevel string
         log level: debug, info, warn, error, fatal, panic
-  -n int
-        number of items to download. If negative, get them all. (default -1)
   -profile string
         like -dev, but with a user-provided profile dir
   -run string

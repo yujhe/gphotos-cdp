@@ -58,7 +58,6 @@ import (
 )
 
 var (
-	nItemsFlag       = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	downloadDirFlag  = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
@@ -98,9 +97,7 @@ func main() {
 	zerolog.TimestampFieldName = "dt"
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
 	flag.Parse()
-	if *nItemsFlag == 0 {
-		return
-	}
+
 	if *verboseFlag && *logLevelFlag == "" {
 		*logLevelFlag = "debug"
 	}
