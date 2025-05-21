@@ -62,6 +62,7 @@ var defaultDownloadDir = filepath.Join(os.Getenv("HOME"), "Downloads", "gphotos-
 var (
 	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	downloadDirFlag  = flag.String("download-dir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
+	photoDirFlag     = flag.String("photo-dir", "", "where to write the photos. default to ${downloadDir}/PhotoLibrary")
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
@@ -220,8 +221,9 @@ type NewDownload struct {
 type Session struct {
 	parentContext    context.Context
 	chromeExecCancel context.CancelFunc
-	downloadDir      string // dir where the photos get stored
+	downloadDir      string // dir where we save the downloaded files and error screenshots
 	downloadDirTmp   string // dir where the photos get stored temporarily
+	photoLibraryDir  string // dir where the photos get stored permanently
 	profileDir       string // user data session dir. automatically created on chrome startup.
 	startNodeParent  *cdp.Node
 	globalErrChan    chan error
@@ -290,10 +292,19 @@ func NewSession() (*Session, error) {
 		return nil, err
 	}
 
+	photoLibraryDir := *photoDirFlag
+	if photoLibraryDir == "" {
+		photoLibraryDir = filepath.Join(downloadDir, "PhotoLibrary")
+	}
+	if err := os.MkdirAll(photoLibraryDir, 0700); err != nil {
+		return nil, err
+	}
+
 	s := &Session{
 		profileDir:      dir,
 		downloadDir:     downloadDir,
 		downloadDirTmp:  downloadDirTmp,
+		photoLibraryDir: photoLibraryDir,
 		globalErrChan:   make(chan error, 1),
 		userPath:        userPath,
 		albumPath:       albumPath,
@@ -386,9 +397,6 @@ func (s *Session) cdpError(format string, v ...any) {
 
 // cleanDownloadDirTmp removes all files (but not directories) from s.downloadDirTmp
 func (s *Session) cleanDownloadDirTmp() error {
-	if s.downloadDir == "" {
-		return nil
-	}
 	entries, err := os.ReadDir(s.downloadDirTmp)
 	if err != nil {
 		return err
@@ -1244,7 +1252,7 @@ func imageIdFromUrl(location string) (string, error) {
 
 // makeOutDir creates a directory in s.downloadDir named of the item ID
 func (s *Session) makeOutDir(imageId string) (string, error) {
-	newDir := filepath.Join(s.downloadDir, imageId)
+	newDir := filepath.Join(s.photoLibraryDir, imageId)
 	if err := os.MkdirAll(newDir, 0700); err != nil {
 		return "", err
 	}
@@ -1474,7 +1482,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 
 				log.Info().Msgf("unrecoverable error occurred during download, removing files already downloaded for this item")
 				// Error downloading original or generated image, remove files already downloaded
-				if err := os.RemoveAll(filepath.Join(s.downloadDir, imageId)); err != nil {
+				if err := os.RemoveAll(filepath.Join(s.photoLibraryDir, imageId)); err != nil {
 					log.Err(err).Msgf("error removing files already downloaded: %v", err)
 				}
 			}
@@ -2129,7 +2137,7 @@ func (s *Session) dirHasFiles(imageId string) (bool, error) {
 	// return false, nil
 	// }
 
-	entries, err := os.ReadDir(filepath.Join(s.downloadDir, imageId))
+	entries, err := os.ReadDir(filepath.Join(s.photoLibraryDir, imageId))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -2138,7 +2146,7 @@ func (s *Session) dirHasFiles(imageId string) (bool, error) {
 	}
 	for _, v := range entries {
 		if !v.IsDir() {
-			f, err := os.Stat(filepath.Join(s.downloadDir, imageId, v.Name()))
+			f, err := os.Stat(filepath.Join(s.photoLibraryDir, imageId, v.Name()))
 			if err != nil {
 				return false, err
 			}
