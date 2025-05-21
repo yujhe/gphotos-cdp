@@ -66,7 +66,6 @@ Usage of ./bin/gphotos-cdp:
         latest date to sync (YYYY-MM-DD)
   -until string
         stop syncing at this photo
-  -v    be verbose
   -workers int
         number of concurrent downloads allowed (default 1)
 ```

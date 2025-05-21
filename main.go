@@ -70,10 +70,9 @@ var (
 	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
 	untilFlag        = flag.String("until", "", "stop syncing at this photo")
 	runFlag          = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
-	verboseFlag      = flag.Bool("v", false, "be verbose")
 	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
 	jsonLogFlag      = flag.Bool("json", false, "output logs in JSON format")
-	logLevelFlag     = flag.String("log-level", "", "log level: debug, info, warn, error, fatal, panic")
+	logLevelFlag     = flag.String("log-level", "info", "log level: debug, info, warn, error, fatal, panic")
 	workersFlag      = flag.Int64("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag      = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag    = flag.String("album-type", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
@@ -103,12 +102,9 @@ func main() {
 	zerolog.TimeFieldFormat = "2006-01-02T15:04:05.999Z07:00"
 	flag.Parse()
 
-	if *verboseFlag && *logLevelFlag == "" {
-		*logLevelFlag = "debug"
-	}
 	level, err := zerolog.ParseLevel(*logLevelFlag)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("-loglevel argument not valid")
+		log.Fatal().Err(err).Msgf("-log-level argument not valid")
 	}
 	zerolog.SetGlobalLevel(level)
 	if !*jsonLogFlag {
