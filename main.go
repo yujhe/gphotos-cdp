@@ -57,9 +57,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var defaultDownloadDir = filepath.Join(os.Getenv("HOME"), "Downloads", "gphotos-cdp")
+
 var (
 	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	downloadDirFlag  = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	downloadDirFlag  = flag.String("dldir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
@@ -277,7 +279,7 @@ func NewSession() (*Session, error) {
 	}
 	downloadDir := *downloadDirFlag
 	if downloadDir == "" {
-		downloadDir = filepath.Join(os.Getenv("HOME"), "Downloads", "gphotos-cdp")
+		downloadDir = defaultDownloadDir
 	}
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return nil, err
