@@ -56,8 +56,6 @@ Usage of ./bin/gphotos-cdp:
         number of items to download. If negative, get them all. (default -1)
   -profile string
         like -dev, but with a user-provided profile dir
-  -removed
-        save list of files found locally that appear to be deleted from Google Photos
   -run string
         the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.
   -to string

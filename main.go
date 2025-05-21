@@ -72,7 +72,6 @@ var (
 	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
 	jsonLogFlag      = flag.Bool("json", false, "output logs in JSON format")
 	logLevelFlag     = flag.String("loglevel", "", "log level: debug, info, warn, error, fatal, panic")
-	removedFlag      = flag.Bool("removed", false, "save list of files found locally that appear to be deleted from Google Photos")
 	workersFlag      = flag.Int64("workers", 1, "number of concurrent downloads allowed")
 	albumIdFlag      = flag.String("album", "", "ID of album to download, has no effect if lastdone file is found or if -start contains full URL")
 	albumTypeFlag    = flag.String("albumtype", "album", "type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL")
@@ -198,7 +197,6 @@ func main() {
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.resync),
-		chromedp.ActionFunc(s.checkForRemovedFiles),
 	); err != nil {
 		log.Fatal().Msgf("failure during sync: %v", err)
 	}
@@ -232,7 +230,6 @@ type Session struct {
 	globalErrChan    chan error
 	userPath         string
 	albumPath        string
-	existingItems    sync.Map
 	foundItems       sync.Map
 	downloadedItems  sync.Map
 	newDownloadChan  chan NewDownload
@@ -291,11 +288,6 @@ func NewSession() (*Session, error) {
 		return nil, err
 	}
 
-	downloadDirEntries, err := os.ReadDir(downloadDir)
-	if err != nil {
-		return nil, err
-	}
-
 	downloadDirTmp := filepath.Join(downloadDir, "tmp")
 	if err := os.MkdirAll(downloadDirTmp, 0700); err != nil {
 		return nil, err
@@ -309,12 +301,6 @@ func NewSession() (*Session, error) {
 		userPath:        userPath,
 		albumPath:       albumPath,
 		newDownloadChan: make(chan NewDownload),
-	}
-
-	for _, e := range downloadDirEntries {
-		if e.IsDir() && e.Name() != "tmp" {
-			s.existingItems.Store(e.Name(), struct{}{})
-		}
 	}
 
 	return s, nil
@@ -520,11 +506,11 @@ func (s *Session) getLocale(ctx context.Context) (string, error) {
 					// Try to get locale from html lang attribute
 					const htmlLang = document.documentElement.lang;
 					if (htmlLang) return htmlLang;
-					
+
 					// Try to get locale from meta tags
 					const metaLang = document.querySelector('meta[property="og:locale"]');
 					if (metaLang) return metaLang.content;
-					
+
 					// Try to get locale from Google's internal data
 					const scripts = document.getElementsByTagName('script');
 					for (const script of scripts) {
@@ -533,7 +519,7 @@ func (s *Session) getLocale(ctx context.Context) (string, error) {
 							if (match) return match[1];
 						}
 					}
-					
+
 					return "unknown";
 				})()
 			`, &locale),
@@ -2063,60 +2049,6 @@ func (s *Session) navRight(log zerolog.Logger) func(ctx context.Context) error {
 		log.Debug().Msg("Navigating right")
 		return navWithAction(ctx, chromedp.KeyEvent(kb.ArrowRight))
 	}
-}
-
-// Check if there are folders in the download dir that were not seen in gphotos
-func (s *Session) checkForRemovedFiles(ctx context.Context) error {
-	if *removedFlag {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		defer cancel()
-
-		log.Info().Msg("checking for removed files")
-		deleted := []string{}
-		s.existingItems.Range(func(itemId, _ any) bool {
-			if itemId != "tmp" {
-				// Check if the folder name is in the map of photo IDs
-				if _, exists := s.foundItems.Load(itemId); !exists {
-					deleted = append(deleted, itemId.(string))
-				}
-			}
-			return true
-		})
-		if len(deleted) > 0 {
-			log.Info().Msgf("folders found for %d local photos that were not found in this sync. Checking google photos to confirm they are not there", len(deleted))
-		}
-		i := 0
-		for i < len(deleted) {
-			imageId := deleted[i]
-			var resp int
-			if err := chromedp.Run(ctx,
-				chromedp.Evaluate(`new Promise((res) => fetch('`+s.getPhotoUrl(imageId)+`').then(x => res(x.status)));`, &resp,
-					func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
-						return p.WithAwaitPromise(true)
-					}),
-			); err != nil {
-				log.Err(err).Msgf("error checking for removed file %s: %s, will not continue checking for removed files", imageId, err.Error())
-				return nil
-			}
-			if resp == http.StatusOK {
-				log.Debug().Msgf("photo %s was not in original sync, but is still present on google photos, it might be in the trash", imageId)
-				deleted = slices.Delete(deleted, i, i+1)
-				continue
-			} else if resp == http.StatusNotFound {
-				log.Trace().Msgf("photo %s not found on google photos, but is in local folder, it was probably deleted or removed from album", imageId)
-			} else {
-				return fmt.Errorf("unexpected response for %s: %v", imageId, resp)
-			}
-			i++
-		}
-		if len(deleted) > 0 {
-			log.Info().Msgf("folders found for %d local photos that don't exist on google photos (in album if using -album), list saved to .removed", len(deleted))
-			if err := os.WriteFile(path.Join(s.downloadDir, ".removed"), []byte(strings.Join(deleted, "\n")), 0644); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // doFileDateUpdate updates the file date of the downloaded files to the photo date
