@@ -66,7 +66,6 @@ var (
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	dbFileFlag       = flag.String("db-file", "gphotos.db", "path to the SQLite database file")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
-	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
 	untilFlag        = flag.String("until", "", "stop syncing at this photo")
 	runFlag          = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
@@ -115,9 +114,6 @@ func main() {
 	if *devFlag && *profileFlag != "" {
 		log.Fatal().Msg("only one of -dev and -profile can be used")
 	}
-	if *albumIdFlag != "" && (*fromFlag != "" || *toFlag != "") {
-		log.Fatal().Msg("-from and -to cannot be used with -album")
-	}
 
 	// Set XDG_CONFIG_HOME and XDG_CACHE_HOME to a temp dir to solve issue in newer versions of Chromium
 	if os.Getenv("XDG_CONFIG_HOME") == "" {
@@ -136,14 +132,6 @@ func main() {
 		fromDate, err = time.Parse(time.DateOnly, *fromFlag)
 		if err != nil {
 			log.Fatal().Msgf("could not parse -from argument %s, must be YYYY-MM-DD", *fromFlag)
-		}
-	}
-	if *toFlag != "" {
-		var err error
-		toDate, err = time.Parse(time.DateOnly, *toFlag)
-		toDate = toDate.Add(time.Hour * 24)
-		if err != nil {
-			log.Fatal().Msgf("could not parse -to argument %s, must be YYYY-MM-DD", *toFlag)
 		}
 	}
 
@@ -221,7 +209,6 @@ type Session struct {
 	downloadDir      string // dir where the photos get stored
 	downloadDirTmp   string // dir where the photos get stored temporarily
 	profileDir       string // user data session dir. automatically created on chrome startup.
-	startNodeParent  *cdp.Node
 	globalErrChan    chan error
 	userPath         string
 	albumPath        string
@@ -567,154 +554,6 @@ func (s *Session) firstNav(ctx context.Context) (err error) {
 	// This is only used to ensure page is loaded
 	if err := s.setFirstItem(ctx); err != nil {
 		return err
-	}
-
-	if *toFlag != "" {
-		t, err := time.Parse("2006-01-02", *toFlag)
-		if err != nil {
-			log.Err(err).Msgf("error parsing -to argument '%s': %s", *toFlag, err.Error())
-			return errors.New("-to argument must be of format 'YYYY-MM-DD'")
-		}
-		startDate := t
-
-		time.Sleep(500 * time.Millisecond)
-		log.Info().Msgf("attempting to scroll to %v", startDate)
-
-		if err := s.navToEnd(ctx); err != nil {
-			return err
-		}
-
-		// Find class name for date nodes
-		dateNodesClassName := ""
-		for range 20 {
-			chromedp.Evaluate(`
-				document.querySelector('`+getAriaLabelSelector(loc.SelectAllPhotosLabel)+`').parentNode.childNodes[1].childNodes[0].childNodes[0].childNodes[0].className
-				`, &dateNodesClassName).Do(ctx)
-			if dateNodesClassName != "" {
-				break
-			}
-			chromedp.KeyEvent(kb.PageUp).Do(ctx)
-			time.Sleep(100 * time.Millisecond)
-		}
-		if dateNodesClassName == "" {
-			return errors.New("failed to find date nodes class name")
-		}
-
-		bisectBounds := []float64{0.0, 1.0}
-		scrollPos := 0.0
-		var foundDateNode, matchedNode *cdp.Node
-		for range 100 {
-			scrollTarget := (bisectBounds[0] + bisectBounds[1]) / 2
-			log.Debug().Msgf("scrolling to %.2f%%", scrollTarget*100)
-			for range 20 {
-				if err := setScrollPosition(ctx, scrollTarget); err != nil {
-					return err
-				}
-				time.Sleep(100 * time.Millisecond)
-				if err := getScrollPosition(ctx, &scrollPos); err != nil {
-					return err
-				}
-				if math.Abs(scrollPos-scrollTarget) < 0.002 {
-					break
-				}
-			}
-			log.Trace().Msgf("scroll position: %.4f%%", scrollPos*100)
-
-			var dateNodes []*cdp.Node
-			for range 20 {
-				if err := chromedp.Nodes(`div.`+dateNodesClassName, &dateNodes, chromedp.ByQueryAll, chromedp.AtLeast(0)).Do(ctx); err != nil {
-					return errors.New("failed to get visible date nodes, " + err.Error())
-				}
-				if len(dateNodes) > 0 {
-					break
-				}
-				chromedp.KeyEvent(kb.PageUp).Do(ctx)
-				time.Sleep(500 * time.Millisecond)
-			}
-			if len(dateNodes) == 0 {
-				return errors.New("no date nodes found")
-			}
-
-			var closestDateNode *cdp.Node
-			var closestDateDiff int
-			var knownFirstOccurance bool
-			for i, n := range dateNodes {
-				if n.NodeName != "DIV" || n.ChildNodeCount == 0 {
-					continue
-				}
-				dateStr := n.Children[0].NodeValue
-				var dt time.Time
-				// Handle special days like "Yesterday" and "Today"
-				today := time.Now()
-				today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
-				for i := range 6 {
-					dtTmp := today.AddDate(0, 0, -i)
-					dayStr := loc.LongDayNames[dtTmp.Weekday()]
-					if i == 0 {
-						dayStr = loc.Today
-					} else if i == 1 {
-						dayStr = loc.Yesterday
-					}
-					if strings.EqualFold(dayStr, dateStr) {
-						dt = dtTmp
-						break
-					}
-				}
-
-				if dt == (time.Time{}) {
-					var err error
-					dt, err = parseDate(dateStr, "", "")
-					if err != nil {
-						return fmt.Errorf("could not parse date %s: %w", dateStr, err)
-					}
-				}
-				diff := int(dt.Sub(startDate).Hours())
-				log.Trace().Msgf("parsed date element %v with distance %d days", dt, diff/24)
-				if closestDateNode == nil || absInt(diff) < absInt(closestDateDiff) {
-					closestDateNode = n
-					closestDateDiff = diff
-					knownFirstOccurance = i > 0 || scrollPos <= 0.001
-					if knownFirstOccurance {
-						break
-					}
-				}
-			}
-
-			if int(closestDateDiff/24) != 0 && matchedNode != nil {
-				foundDateNode = matchedNode
-				break
-			} else if int(closestDateDiff/24) == 0 && closestDateNode != nil {
-				if knownFirstOccurance {
-					foundDateNode = closestDateNode
-					break
-				} else {
-					matchedNode = closestDateNode
-					bisectBounds[1] = (scrollPos + bisectBounds[1]*3) / 4
-				}
-			} else if closestDateDiff > 0 {
-				bisectBounds[0] = scrollPos
-			} else if closestDateDiff < 0 {
-				bisectBounds[1] = scrollPos
-			}
-
-			time.Sleep(50 * time.Millisecond)
-		}
-
-		log.Debug().Msgf("final scroll position: %.4f%%", scrollPos*100)
-
-		time.Sleep(1000 * time.Millisecond)
-
-		if foundDateNode == nil {
-			return errors.New("could not find -start date")
-		}
-
-		for foundDateNode.Parent != nil {
-			foundDateNode = foundDateNode.Parent
-			if foundDateNode.AttributeValue("style") != "" {
-				s.startNodeParent = foundDateNode
-				break
-			}
-		}
 	}
 
 	var location string

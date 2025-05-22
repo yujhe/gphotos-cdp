@@ -60,8 +60,6 @@ Usage of ./bin/gphotos-cdp:
         the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.
   -skip-download
         skip download of photos, useful for dry runs or metadata collection
-  -to string
-        latest date to sync (YYYY-MM-DD)
   -until string
         stop syncing at this photo
   -workers int
