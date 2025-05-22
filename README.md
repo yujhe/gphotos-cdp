@@ -54,8 +54,6 @@ Usage of ./bin/gphotos-cdp:
         output logs in JSON format
   -log-level string
         log level: debug, info, warn, error, fatal, panic (default "info")
-  -photo-dir string
-        where to write the photos (default "/Users/yujhe.li/Downloads/gphotos-cdp/PhotoLibrary")
   -profile string
         like -dev, but with a user-provided profile dir
   -run string
