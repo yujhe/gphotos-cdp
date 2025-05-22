@@ -23,7 +23,7 @@ go build -o bin/gphotos-cdp
 ./bin/gphotos-cdp -dev -headless -download-dir photos -log-level info
 
 # To sync a single album, you can use the -album flag:
-./bin/gphotos-cdp -dev -download-dir photos -album 1234567890ABCDEF -log-level info
+./bin/gphotos-cdp -dev -download-dir photos -album album/1234567890ABCDEF -log-level info
 ```
 
 ## Usage
@@ -33,9 +33,9 @@ go build -o bin/gphotos-cdp
 
 Usage of ./bin/gphotos-cdp:
   -album string
-        ID of album to download, has no effect if lastdone file is found or if -start contains full URL
+        ID of album to download
   -album-type string
-        type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL (default "album")
+        type of album to download (as seen in URL)
   -batch-size int
         number of photos to download in one batch
   -chrome-exec-path string
