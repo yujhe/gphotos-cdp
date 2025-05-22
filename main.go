@@ -1941,7 +1941,7 @@ func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) 
 	}
 
 	isNew := true
-	hasFiles, err := s.dirHasFiles(imageId)
+	hasFiles, err := s.photoIsDownloaded(imageId)
 	if err != nil {
 		return false, err
 	} else if hasFiles {
@@ -2161,31 +2161,13 @@ func getContentOfFirstVisibleNodeScript(sel string, imageId string) string {
 	return fmt.Sprintf(`[...document.querySelectorAll('[data-p*="%s"] %s')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, imageId, sel)
 }
 
-func (s *Session) dirHasFiles(imageId string) (bool, error) {
-	// FIXME: check file exist from db
-	// if _, exists := s.existingItems.Load(imageId); !exists {
-	// return false, nil
-	// }
-
-	entries, err := os.ReadDir(filepath.Join(s.photoLibraryDir, imageId))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
+func (s *Session) photoIsDownloaded(imageId string) (bool, error) {
+	downloaded, err := s.db.IsPhotoDownloaded(s.getPhotoUrl(imageId))
 	if err != nil {
 		return false, err
 	}
-	for _, v := range entries {
-		if !v.IsDir() {
-			f, err := os.Stat(filepath.Join(s.photoLibraryDir, imageId, v.Name()))
-			if err != nil {
-				return false, err
-			}
-			if f.Size() > 0 {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
+
+	return downloaded, nil
 }
 
 func (s *Session) getPhotoNodeSelector() string {

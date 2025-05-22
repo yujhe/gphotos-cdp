@@ -63,6 +63,20 @@ func (d *Database) InsertPhotoIfNotExists(photo PhotoRow) error {
 	return err
 }
 
+func (d *Database) IsPhotoDownloaded(url string) (bool, error) {
+	// Check if the photo is already downloaded
+	stmt := `SELECT 1 FROM photos WHERE url = ? AND download_at IS NOT NULL`
+	var exists int
+	err := d.db.QueryRow(stmt, url).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (d *Database) MarkPhotoAsDownloaded(url string) error {
 	// Update the download_at field for the photo
 	stmt := `
