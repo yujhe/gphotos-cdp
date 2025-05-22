@@ -63,3 +63,13 @@ func (d *Database) InsertPhotoIfNotExists(photo PhotoRow) error {
 	return err
 }
 
+func (d *Database) MarkPhotoAsDownloaded(url string) error {
+	// Update the download_at field for the photo
+	stmt := `
+		UPDATE photos
+		SET download_at = CURRENT_TIMESTAMP
+		WHERE url = ?
+	`
+	_, err := d.db.Exec(stmt, url)
+	return err
+}
