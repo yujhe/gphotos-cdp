@@ -21,3 +21,5 @@ gphotos-cdp
 
 .vscode/
 bin/
+gphotos.db
+__debug*
