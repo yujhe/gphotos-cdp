@@ -8,6 +8,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20250224005500-01948a15fe7c
 	github.com/chromedp/chromedp v0.13.0
 	github.com/evilsocket/islazy v1.11.0
+	github.com/mattn/go-sqlite3 v1.14.28
 	github.com/rs/zerolog v1.33.0
 	golang.org/x/text v0.14.0
 	gopkg.in/yaml.v3 v3.0.1

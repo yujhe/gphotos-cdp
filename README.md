@@ -38,12 +38,14 @@ Usage of ./bin/gphotos-cdp:
         type of album to download (as seen in URL), has no effect if lastdone file is found or if -start contains full URL (default "album")
   -batch-size int
         number of photos to download in one batch
+  -chrome-exec-path string
+        path to Chrome/Chromium binary to use
+  -db-file string
+        path to the SQLite database file (default "gphotos.db")
   -dev
         dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.
   -download-dir string
         where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.
-  -chrome-exec-path string
-        path to Chrome/Chromium binary to use
   -from string
         earliest date to sync (YYYY-MM-DD)
   -headless

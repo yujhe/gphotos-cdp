@@ -64,6 +64,7 @@ var (
 	downloadDirFlag  = flag.String("download-dir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
 	photoDirFlag     = flag.String("photo-dir", "", "where to write the photos. default to ${downloadDir}/PhotoLibrary")
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
+	dbFileFlag       = flag.String("db-file", "gphotos.db", "path to the SQLite database file")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
 	toFlag           = flag.String("to", "", "latest date to sync (YYYY-MM-DD)")
 	untilFlag        = flag.String("until", "", "stop syncing at this photo")
@@ -233,6 +234,7 @@ type Session struct {
 	downloadedItems  sync.Map
 	newDownloadChan  chan NewDownload
 	skippedCount     atomic.Uint64
+	db               *Database
 }
 
 func NewSession() (*Session, error) {
@@ -300,6 +302,12 @@ func NewSession() (*Session, error) {
 		return nil, err
 	}
 
+	// initial database if not exists
+	db, err := NewDatabaseIfNotExist(*dbFileFlag)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Session{
 		profileDir:      dir,
 		downloadDir:     downloadDir,
@@ -309,6 +317,7 @@ func NewSession() (*Session, error) {
 		userPath:        userPath,
 		albumPath:       albumPath,
 		newDownloadChan: make(chan NewDownload),
+		db:              db,
 	}
 
 	return s, nil
