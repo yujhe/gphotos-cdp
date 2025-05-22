@@ -45,7 +45,7 @@ Usage of ./bin/gphotos-cdp:
   -dev
         dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.
   -download-dir string
-        where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.
+        where to write the downloads (default "/Users/yujhe.li/Downloads/gphotos-cdp")
   -from string
         earliest date to sync (YYYY-MM-DD)
   -headless
@@ -53,9 +53,9 @@ Usage of ./bin/gphotos-cdp:
   -json
         output logs in JSON format
   -log-level string
-        log level: debug, info, warn, error, fatal, panic
+        log level: debug, info, warn, error, fatal, panic (default "info")
   -photo-dir string
-        where to write the photos. default to ${downloadDir}/PhotoLibrary
+        where to write the photos (default "/Users/yujhe.li/Downloads/gphotos-cdp/PhotoLibrary")
   -profile string
         like -dev, but with a user-provided profile dir
   -run string

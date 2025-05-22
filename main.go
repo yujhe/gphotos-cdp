@@ -59,11 +59,12 @@ import (
 )
 
 var defaultDownloadDir = filepath.Join(os.Getenv("HOME"), "Downloads", "gphotos-cdp")
+var defaultPhotoDir = filepath.Join(defaultDownloadDir, "PhotoLibrary")
 
 var (
 	devFlag          = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	downloadDirFlag  = flag.String("download-dir", "", fmt.Sprintf("where to write the downloads. defaults to %s", defaultDownloadDir))
-	photoDirFlag     = flag.String("photo-dir", "", "where to write the photos. default to ${downloadDir}/PhotoLibrary")
+	downloadDirFlag  = flag.String("download-dir", defaultDownloadDir, "where to write the downloads")
+	photoDirFlag     = flag.String("photo-dir", defaultPhotoDir, "where to write the photos")
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	dbFileFlag       = flag.String("db-file", "gphotos.db", "path to the SQLite database file")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
@@ -279,9 +280,6 @@ func NewSession() (*Session, error) {
 		}
 	}
 	downloadDir := *downloadDirFlag
-	if downloadDir == "" {
-		downloadDir = defaultDownloadDir
-	}
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return nil, err
 	}
@@ -292,9 +290,6 @@ func NewSession() (*Session, error) {
 	}
 
 	photoLibraryDir := *photoDirFlag
-	if photoLibraryDir == "" {
-		photoLibraryDir = filepath.Join(downloadDir, "PhotoLibrary")
-	}
 	if err := os.MkdirAll(photoLibraryDir, 0700); err != nil {
 		return nil, err
 	}
