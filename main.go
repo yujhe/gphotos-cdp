@@ -281,7 +281,7 @@ func NewSession() (*Session, error) {
 		return nil, err
 	}
 
-	downloadDirTmp := filepath.Join(downloadDir, "tmp")
+	downloadDirTmp := filepath.Join(downloadDir, ".tmp")
 	if err := os.MkdirAll(downloadDirTmp, 0700); err != nil {
 		return nil, err
 	}
