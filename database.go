@@ -51,3 +51,15 @@ func (d *Database) Close() error {
 	}
 	return nil
 }
+
+func (d *Database) InsertPhotoIfNotExists(photo PhotoRow) error {
+	// insert new photo to database if not exist
+	stmt := `
+        INSERT OR IGNORE INTO photos
+        (image_id, filename, url, date, download_at)
+        VALUES (?, ?, ?, ?, ?)
+    `
+	_, err := d.db.Exec(stmt, photo.ImageID, photo.Filename, photo.Url, photo.Date, photo.DownloadAt)
+	return err
+}
+

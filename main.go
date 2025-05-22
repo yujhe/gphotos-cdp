@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -1390,11 +1391,24 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 		} else if toDate != (time.Time{}) && data.date.After(toDate) {
 			errChan <- errPhotoTakenAfterToDate
 		} else {
-			errChan <- nil
+			// insert photo data to database if not exists
+			err := s.db.InsertPhotoIfNotExists(PhotoRow{
+				ImageID:  imageId,
+				Filename: data.filename,
+				Url:      s.getPhotoUrl(imageId),
+				Date:     sql.NullTime{Time: data.date, Valid: true},
+			})
 
-			// we need two of these in case we are downloading an original
-			photoDataChan <- data
-			photoDataChan <- data
+			if err != nil {
+				log.Error().Msg("failed to insert photo data into database")
+				errChan <- err
+			} else {
+				errChan <- nil
+
+				// we need two of these in case we are downloading an original
+				photoDataChan <- data
+				photoDataChan <- data
+			}
 		}
 	}()
 
