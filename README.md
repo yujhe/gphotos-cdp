@@ -64,7 +64,7 @@ It will open browser for authentication and downloads all photos to `./photos`
 ./bin/gphotos-cdp -download-dir photos -from 2025-01-01 -log-level info
 ```
 
-### Download Photos in A Album
+### Download Photos in a Album
 
 You can find the album id from URL, it should look like: `album/id123`, `share/id123`.
 
