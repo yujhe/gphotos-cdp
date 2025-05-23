@@ -1,8 +1,12 @@
 # gphotos-cdp
 
-gphotos-cdp is a program that downloads your photos stored in Google Photos.
+gphotos-cdp is a program that downloads your photos stored in Google Photos to local storage.
 
-Forked from [spraot/gphotos-cdp](https://github.com/spraot/gphotos-cdp).
+Worked based on [spraot/gphotos-cdp](https://github.com/spraot/gphotos-cdp) (Thanks to @spraot) with some changes:
+
+- Indexed downloaded photos/videos in database: No need to scan the files/dirs in the download directory. Even if you move the downloads to other directory, they will not be re-download.
+- Add `-skip-download` flag: Skip download of photos, useful for dry runs or index creation.
+- Remove `-n`, `-to`, `-removed`, `-until` flags: Not necessary for my requirements.
 
 ## Installation
 
@@ -10,25 +14,9 @@ Forked from [spraot/gphotos-cdp](https://github.com/spraot/gphotos-cdp).
 go build -o bin/gphotos-cdp
 ```
 
-## Quickstart
-
-```sh
-# Opens browser for authentication, downloads all photos to ./photos
-./bin/gphotos-cdp -download-dir photos -log-level info
-
-# To run headless, you must first run:
-./bin/gphotos-cdp -dev -download-dir photos -log-level info
-
-# After successful authentication, you can stop the process and run this instead:
-./bin/gphotos-cdp -dev -headless -download-dir photos -log-level info
-
-# To sync a single album, you can use the -album flag:
-./bin/gphotos-cdp -dev -download-dir photos -album album/1234567890ABCDEF -log-level info
-```
-
 ## Usage
 
-```sh
+```txt
 ./bin/gphotos-cdp -h
 
 Usage of ./bin/gphotos-cdp:
@@ -60,24 +48,45 @@ Usage of ./bin/gphotos-cdp:
         the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.
   -skip-download
         skip download of photos, useful for dry runs or metadata collection
-  -until string
-        stop syncing at this photo
   -workers int
         number of concurrent downloads allowed (default 1)
 ```
 
-## What?
+## Quickstart
 
-This program uses the Chrome DevTools Protocol to drive a Chrome session that downloads your photos stored in Google Photos. For each downloaded photo, an external program can be run on it (with the -run flag) right after it is downloaded to e.g. upload it somewhere else.
+### Download All Photos
 
-## Why?
+It will open browser for authentication and downloads all photos to `./photos`
 
-We want to incrementally download our own photos out of Google Photos. Google offers no APIs to do this, so we have to scrape the website.
+```sh
+./bin/gphotos-cdp -download-dir photos -log-level info
+# or use `-from` flag to download photos after that date
+./bin/gphotos-cdp -download-dir photos -from 2025-01-01 -log-level info
+```
 
-We can get our original photos out with [Google Takeout](https://takeout.google.com/), but only manually, and slowly. We don't want to have to remember to do it (or remember to renew the time-limited scheduled takeouts) and we'd like our photos mirrored in seconds or minutes, not weeks.
+### Download Photos in A Album
 
-### What if Google Photos breaks this tool on purpose or accident?
+You can find the album id from URL, it should look like: `album/id123`, `share/id123`.
 
-I guess we'll have to continually update it.
+```sh
+# To sync a single album, you can use the -album flag:
+./bin/gphotos-cdp -download-dir photos -album album/1234567890ABCDEF -log-level info
+# or use `-from` flag to download photos after that date
+./bin/gphotos-cdp -download-dir photos -album album/1234567890ABCDEF -from 2025-01-01 -log-level info
+```
 
-But that's no different than using people's APIs, because companies all seem to be deprecating and changing their APIs regularly too.
+### Download Photos in Headless Mode
+
+In `headless` mode, no browser is opened for downloads. To run headless mode, you must first complete authentication by `-dev` or `-profile`.
+
+```sh
+# To run headless, you must first run with `-dev`:
+./bin/gphotos-cdp -dev -download-dir photos -log-level info
+# or `-profile` to store authetication result in `profile` dir
+./bin/gphotos-cdp -profile profile -download-dir photos -log-level info
+
+# After successful authentication, you can stop the process and run this instead:
+./bin/gphotos-cdp -dev -headless -download-dir photos -log-level info
+# or you can pass the profile
+./bin/gphotos-cdp -profile profile -headless -download-dir photos -log-level info
+```

@@ -75,7 +75,7 @@ var (
 	albumTypeFlag    = flag.String("album-type", "album", "type of album to download (as seen in URL)")
 	batchSizeFlag    = flag.Int("batch-size", 0, "number of photos to download in one batch")
 	execPathFlag     = flag.String("chrome-exec-path", "", "path to Chrome/Chromium binary to use")
-	skipDownloadFlag = flag.Bool("skip-download", false, "skip download of photos, useful for dry runs or metadata collection")
+	skipDownloadFlag = flag.Bool("skip-download", false, "skip download of photos, useful for dry runs or index creation")
 )
 
 const gphotosUrl = "https://photos.google.com"
