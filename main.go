@@ -66,7 +66,6 @@ var (
 	profileFlag      = flag.String("profile", "", "like -dev, but with a user-provided profile dir")
 	dbFileFlag       = flag.String("db-file", "gphotos.db", "path to the SQLite database file")
 	fromFlag         = flag.String("from", "", "earliest date to sync (YYYY-MM-DD)")
-	untilFlag        = flag.String("until", "", "stop syncing at this photo")
 	runFlag          = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	headlessFlag     = flag.Bool("headless", false, "Start chrome browser in headless mode (must use -dev and have already authenticated).")
 	jsonLogFlag      = flag.Bool("json", false, "output logs in JSON format")
@@ -1699,11 +1698,6 @@ syncAllLoop:
 			imageId, err := imageIdFromUrl(lastNode.AttributeValue("href"))
 			if err != nil {
 				return fmt.Errorf("error getting item id from url, %w", err)
-			}
-
-			if strings.EqualFold(imageId, *untilFlag) {
-				foundUntil = true
-				break
 			}
 
 			log := log.With().Str("itemId", imageId).Logger()
