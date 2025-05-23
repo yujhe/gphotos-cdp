@@ -105,7 +105,7 @@ func main() {
 	}
 	zerolog.SetGlobalLevel(level)
 	if !*jsonLogFlag {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.TimeOnly})
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 	}
 	if (!*devFlag && *profileFlag == "") && *headlessFlag {
 		log.Fatal().Msg("-headless only allowed in dev mode or if -profile dir is set")
