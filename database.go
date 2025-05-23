@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -86,4 +87,30 @@ func (d *Database) MarkPhotoAsDownloaded(url string) error {
 	`
 	_, err := d.db.Exec(stmt, url)
 	return err
+}
+
+func (d *Database) GetDownloadedPhotoUrlsSince(from time.Time) ([]string, error) {
+	// Get all downloaded photo URLs since the specified date
+	stmt := `
+		SELECT url
+		FROM photos
+		WHERE download_at IS NOT NULL
+			AND download_at >= ?
+	`
+	rows, err := d.db.Query(stmt, from)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err != nil {
+			return nil, err
+		}
+		urls = append(urls, url)
+	}
+
+	return urls, nil
 }

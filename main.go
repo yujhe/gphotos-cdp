@@ -211,6 +211,7 @@ type Session struct {
 	globalErrChan    chan error
 	userPath         string
 	albumPath        string
+	existingItems    sync.Map
 	foundItems       sync.Map
 	downloadedItems  sync.Map
 	newDownloadChan  chan NewDownload
@@ -288,6 +289,16 @@ func NewSession() (*Session, error) {
 		newDownloadChan: make(chan NewDownload),
 		db:              db,
 	}
+
+	// load downloaded items from database
+	downloadedUrls, err := db.GetDownloadedPhotoUrlsSince(fromDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load downloaded items from database: %v", err)
+	}
+	for _, url := range downloadedUrls {
+		s.existingItems.Store(url, struct{}{})
+	}
+	log.Info().Msgf("loaded %d downloaded photo urls from database since %v", len(downloadedUrls), fromDate)
 
 	return s, nil
 }
@@ -1756,10 +1767,8 @@ func (s *Session) isNewItem(log zerolog.Logger, imageId string, markFound bool) 
 	}
 
 	isNew := true
-	hasFiles, err := s.photoIsDownloaded(imageId)
-	if err != nil {
-		return false, err
-	} else if hasFiles {
+	hasFiles := s.photoIsDownloaded(imageId)
+	if hasFiles {
 		log.Trace().Msgf("skipping item, already downloaded")
 		isNew = false
 	}
@@ -1978,13 +1987,10 @@ func getContentOfFirstVisibleNodeScript(sel string, imageId string) string {
 	return fmt.Sprintf(`[...document.querySelectorAll('[data-p*="%s"] %s')].filter(x => x.checkVisibility()).map(x => x.textContent)[0] || ''`, imageId, sel)
 }
 
-func (s *Session) photoIsDownloaded(imageId string) (bool, error) {
-	downloaded, err := s.db.IsPhotoDownloaded(s.getPhotoUrl(imageId))
-	if err != nil {
-		return false, err
-	}
-
-	return downloaded, nil
+func (s *Session) photoIsDownloaded(imageId string) bool {
+	// check if the photo is already download
+	_, exists := s.existingItems.Load(s.getPhotoUrl(imageId))
+	return exists
 }
 
 func (s *Session) getPhotoNodeSelector() string {
