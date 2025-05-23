@@ -1233,7 +1233,7 @@ func (s *Session) downloadAndProcessItem(ctx context.Context, log zerolog.Logger
 	}()
 
 	if *skipDownloadFlag {
-		log.Debug().Msg("skipping download photo due to -skipdownload flag")
+		log.Debug().Msg("skipping download photo due to -skip-download flag")
 		// Wait for the getPhotoData goroutine to finish its work or error out.
 		errPhotoData := <-errChan
 		if errPhotoData != nil {
@@ -1881,11 +1881,13 @@ func (s *Session) doWorkerBatchItem(ctx context.Context, log zerolog.Logger, ima
 		log.Trace().Msgf("downloadWorker: encountered error while processing batch item: %s", err.Error())
 		return "", err
 	} else {
-		// mark photo as downloaded in database
-		err := s.db.MarkPhotoAsDownloaded(s.getPhotoUrl(imageId))
-		if err != nil {
-			log.Error().Msgf("failed to mark photo as downloaded in database: %v", err)
-			return "", err
+		if !*skipDownloadFlag {
+			// mark photo as downloaded in database
+			err := s.db.MarkPhotoAsDownloaded(s.getPhotoUrl(imageId))
+			if err != nil {
+				log.Error().Msgf("failed to mark photo as downloaded in database: %v", err)
+				return "", err
+			}
 		}
 
 		return imageId, nil
