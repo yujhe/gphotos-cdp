@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -20,10 +21,11 @@ type Database struct {
 }
 
 func NewDatabaseIfNotExist(dbPath string) (*Database, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?cache=shared", dbPath))
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 
 	// Create the table if it doesn't exist
 	createTableSQL := `CREATE TABLE IF NOT EXISTS photos (
