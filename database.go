@@ -97,7 +97,7 @@ func (d *Database) GetDownloadedPhotoUrlsSince(from time.Time) ([]string, error)
 		SELECT url
 		FROM photos
 		WHERE download_at IS NOT NULL
-			AND download_at >= ?
+			AND "date" >= ?
 	`
 	rows, err := d.db.Query(stmt, from)
 	if err != nil {
